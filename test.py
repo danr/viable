@@ -21,16 +21,11 @@ store.root = r'''
             const msg = JSON.parse(e.data)
             if (msg.type == 'eval') {
                 const scope = msg.scope || {}
-                const names = Object.keys(scope)
-                const body = [
-                    "'use strict'",
-                    ...names.map(name => "let " + name + " = this." + name),
-                    msg.body,
-                ].join('\n')
+                const body = "'use strict'; " + msg.body
                 console.log(body)
                 console.log(scope)
-                const f = Function(body).bind(scope)
-                f()
+                const f = Function(...Object.keys(scope), body)
+                f(...Object.values(scope))
             } else {
                 console.log(e.data)
             }

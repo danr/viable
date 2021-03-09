@@ -13,7 +13,6 @@ from threading import Thread
 import sys
 import textwrap
 import pathlib
-
 import traceback as tb
 
 import time
@@ -28,22 +27,50 @@ def clear():
     print("\033c\033[3J", end='')
 
 
+def clear_caches(path):
+    '''
+    Clear caches for end-user libraries. Currently only support snoop.
+    '''
+    path = pathlib.Path(path)
+    for name, module in sys.modules.items():
+        try:
+            module_file = module.__file__
+        except AttributeError:
+            continue
+        if module_file is None:
+            continue
+        if path.samefile(module_file or ''):
+            del sys.modules[name]
+            break
+    try:
+        if path.suffix == '.py':
+            import snoop
+            snoop.formatting.Source.for_filename(path, {}, use_cache=False)
+    except ModuleNotFoundError:
+        pass
+
+
 def serve(filepath, globals, flags):
 
     state = dotdict(
         running = False,
         interrupt = False,
         task = None,
+        reloads = 0,
     )
 
     watcher = inotify.INotify()
 
-    def run():
+    def run(updated_path=filepath):
+
+        if '' not in sys.path:
+            sys.path = [''] + sys.path
+
         state.running = True
         try:
-            with open(filepath, 'r') as fp:
-                filestr = fp.read()
+            filestr = open(filepath, 'r').read()
             co = compile(filestr, filepath, 'exec')
+            state.reloads += 1
         except Exception:
             tb.print_exc()
             state.running = False
@@ -69,9 +96,11 @@ def serve(filepath, globals, flags):
 
     def listen():
         watcher.add_watch(path='.', mask=inotify.flags.CLOSE_WRITE | inotify.flags.ONESHOT)
-        event = watcher.read()
+        events = watcher.read()
         if flags.debug:
-            print(event)
+            print(events)
+        for event in events:
+            clear_caches(event.name)
         if state.running:
             import _thread
             state.interrupt = True

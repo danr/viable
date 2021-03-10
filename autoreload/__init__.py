@@ -1,4 +1,3 @@
-
 init_globals = dict(globals())
 
 from pprint import pprint as pp
@@ -12,7 +11,7 @@ from threading import Thread
 
 import sys
 import textwrap
-import pathlib
+from pathlib import Path
 import traceback as tb
 
 import time
@@ -27,21 +26,31 @@ def clear():
     print("\033c\033[3J", end='')
 
 
-def clear_caches(path):
-    '''
-    Clear caches for end-user libraries. Currently only support snoop.
-    '''
-    path = pathlib.Path(path)
-    for name, module in sys.modules.items():
+def clear_imports(root_path):
+    for name, module in list(sys.modules.items()):
         try:
             module_file = module.__file__
         except AttributeError:
             continue
         if module_file is None:
             continue
-        if path.samefile(module_file or ''):
-            del sys.modules[name]
-            break
+        path = Path(module_file).expanduser().resolve()
+        try:
+            rel = path.relative_to(root_path)
+            if 'site-packages' not in rel.parts:
+                # print('deleting module', name, rel, file=sys.stderr)
+                # another idea is to use importlib.reload instead
+                # this could be done on the main file as well...
+                del sys.modules[name]
+        except ValueError:
+            pass
+
+
+def clear_caches(path):
+    '''
+    Clear caches for end-user libraries. Currently only support snoop.
+    '''
+    path = Path(path)
     try:
         if path.suffix == '.py':
             import snoop
@@ -50,7 +59,7 @@ def clear_caches(path):
         pass
 
 
-def serve(filepath, globals, flags):
+def serve(livepath, live_globals, flags):
 
     state = dotdict(
         running = False,
@@ -61,27 +70,28 @@ def serve(filepath, globals, flags):
 
     watcher = inotify.INotify()
 
-    def run(updated_path=filepath):
-
+    def run():
         if '' not in sys.path:
             sys.path = [''] + sys.path
 
         state.running = True
         try:
-            filestr = open(filepath, 'r').read()
-            co = compile(filestr, filepath, 'exec')
+            # todo: change to importlib.import_module
+            # then this globals-fiddling won't be needed
+            # the module's globals can be accessed using e.g sys.modules
+            filestr = open(livepath, 'r').read()
+            co = compile(filestr, livepath, 'exec')
             state.reloads += 1
         except Exception:
             tb.print_exc()
             state.running = False
             return
-        # os.chdir(pathlib.Path(filepath).absolute())
         if flags['clear']:
             clear()
         if flags.debug:
-            print(f'{time.strftime("%X")} running {filepath}')
+            print(f'{time.strftime("%X")} running {livepath}')
         try:
-            exec(co, globals)
+            exec(co, live_globals)
         except KeyboardInterrupt as e:
             if state.interrupt:
                 if flags.debug:
@@ -99,8 +109,14 @@ def serve(filepath, globals, flags):
         events = watcher.read()
         if flags.debug:
             print(events)
+        needs_clear_imports = False
         for event in events:
+            path = Path(event.name)
             clear_caches(event.name)
+            if path.suffix == '.py' and not path.samefile(livepath):
+                needs_clear_imports = True
+        if needs_clear_imports:
+            clear_imports(livepath.expanduser().resolve().parent)
         if state.running:
             import _thread
             state.interrupt = True
@@ -117,16 +133,11 @@ def main():
     flags = { a for a in argv if a.startswith('-') }
     filepaths = [ a for a in argv if a not in flags ]
     if len(filepaths) != 1:
-        raise ValueError('One filepath required')
-    filepath = filepaths[0]
+        raise ValueError('One live file required')
+    livepath = Path(filepaths[0])
     flags = dotdict(
         clear = '-c' in flags or '--clear' in flags,
         debug = '-d' in flags or '--debug' in flags,
     )
-    globals = dict(
-        init_globals,
-        store=dotdict(),
-        flags=flags,
-        dotdict=dotdict,
-    )
-    serve(filepath, globals, flags)
+    live_globals = dict(init_globals)
+    serve(livepath, live_globals, flags)

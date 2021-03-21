@@ -16,12 +16,23 @@
         }
       }
       expose(function raw_eval(body0, scope0) {
-        const scope = {...exposed, expose, ...scope0}
+        const scope = {...exposed, expose, pycall, ...scope0}
         const body = "'use strict';\n" + body0
         // console.log(body, scope)
         const f = Function(...Object.keys(scope), body)
         f(...Object.values(scope))
       })
+      function pycall(name, args=undefined, kwargs=undefined) {
+        if (ws?.readyState == WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'call',
+            name,
+            args,
+            kwargs,
+          }))
+        }
+      }
+      window.pycall = pycall
       ws.onopen = function onopen() {
         for (const e of Object.keys(exposed)) {
           ws.send(JSON.stringify(["exposed", e]))

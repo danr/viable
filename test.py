@@ -1,3 +1,7 @@
+import show
+import snoop
+snoop.install(pformat=show.show)
+
 from bottle import route, get, run, static_file
 from bottle import request, Bottle, abort
 from bottle.ext.websocket import GeventWebSocketServer, websocket
@@ -17,7 +21,13 @@ class dotdict(dict):
 store = globals().get('store', dotdict())
 store.reloads = store.reloads or 0
 store.reloads += 1
-store.exposed = store.exposed or {}
+store.exposed = {}
+
+def expose(f, name=None):
+    name = name or f.__name__
+    store.exposed[name] = f
+    print('Exposed', name)
+    return f
 
 @route('/ws', apply=[websocket])
 def handle_ws(ws):
@@ -26,13 +36,22 @@ def handle_ws(ws):
         print(f"closing old ws")
         store.ws.close()
     store.ws = ws
-    print(f"Got websocket!")
+    print(f"Got websocket!", store.reloads)
     while True:
         try:
-            message = ws.receive()
-            if not message:
+            msg_raw = ws.receive()
+            if not msg_raw:
                 break
-            print(f"{store.reloads} Your message was: {message!r}")
+            try:
+                msg = json.loads(msg_raw)
+            except ValueError:
+                msg = None
+            if isinstance(msg, dict):
+                if msg.get('type') == 'call':
+                    print(f"{store.reloads} Calling: {msg!r}")
+                    store.exposed[msg['name']](*msg.get('args', []), **msg.get('kwargs', {}))
+            else:
+                print(f"{store.reloads} Received: {msg or msg_raw!r}")
         except WebSocketError as e:
             print(str(e))
             break
@@ -85,8 +104,6 @@ class JS():
     def __call__(self, selector):
         return JSSelector(self, selector)
 
-import snoop
-
 class JSSelector():
     '''
     This is so you can use = on a selected value. Example:
@@ -110,6 +127,8 @@ class JSSelector():
         elif isinstance(value, JSSelectorAttr):
             # already handled by +=, skip
             return
+        elif attr in ('outerHTML'):
+            self.js.set_prop(self.selector, 'outerHTML', value)
         elif attr in ('html', 'innerHTML'):
             self.js.set_prop(self.selector, 'innerHTML', value)
         elif 1:
@@ -130,6 +149,9 @@ class JSSelectorAttr():
         self.attr = attr
 
     def __iadd__(self, value):
+        if self.attr in ('outerHTML'):
+            self.js.add_prop(self.selector, 'outerHTML', value)
+            return self
         if self.attr in ('html', 'innerHTML'):
             self.js.add_prop(self.selector, 'innerHTML', value)
             return self
@@ -154,20 +176,49 @@ js.raw_eval('''
   expose(function add_attr(sel, attr, value) { const e = document.querySelector(sel); e.setAttribute(attr, e.getAttribute(attr) + value) })
 ''')
 
+@expose
+def reply(*args, **kws):
+    value = kws.get('value')
+    if value:
+        js('#minor').html = str(value)
+    else:
+        print('reply', args, kws)
+
+import inspect
+def handler(f):
+    args = []
+    for param in inspect.signature(f).parameters.values():
+        if param.kind != param.POSITIONAL_OR_KEYWORD:
+            raise ValueError('Only positional or keyword params supported')
+        head, *tail = param.name.split('_', 1)
+        if head in ['target', 'currentTarget']:
+            args += [f'event?.{head}.{tail[0]}']
+        else:
+            args += [f'event.{param.name}']
+    name = hex(id(f))
+    expose(f, name)
+    args = ', '.join(args)
+    return f'pycall({name!r}, [{args}])'
+
 js('body').html = '''
   <h1>Major</h1>
   <div id=major></div>
   <h2>Minor</h1>
   <div id=minor></div>
+  <div id=footer></div>
 '''
 
-js('#major').html = 'lol #' + str(store.reloads)
 js('#major').style = 'color:#99c; font-family: monospace; font-size: 5em;'
-js('#major').onclick = 'console.log(this, event)'
+js('#major').outerHTML = '<input id=txt type=text />'
+js('#txt').oninput = handler(lambda target_value: [
+    setattr(js('#minor'), 'html', pp(target_value)),
+    js('#footer').outerHTML.__iadd__(f'<pre>{pp(target_value)}</pre>'),
+])
 
 js('#minor').html = 'lol #' + str(store.reloads)
 js('#minor').style = 'color:#9c9; font-family: monospace; font-size: 5em;'
-js('#minor').onclick = 'console.log(this, event)'
+js('#minor').onclick = handler(lambda x, y: pp(x, y))
+# js('#minor').onclick = "pycall('reply', [event.x, event.y])"
 
 js('#minor').html += ' also this!'
 js('#minor').html += ' and this!'

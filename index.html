@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <script type="text/javascript">
+    (function () {
+      'use strict'
+      const {host, pathname} = window.location
+      const ws = new WebSocket(`ws://${host}/ws`)
+      window.ws = ws
+      const exposed = []
+      function expose(f, name) {
+        const e = f.name || name
+        exposed[e] = f
+        if (ws?.readyState == WebSocket.OPEN) {
+          ws.send(JSON.stringify(["exposed", e]))
+        }
+      }
+      expose(function raw_eval(body0, scope0) {
+        const scope = {...exposed, expose, ...scope0}
+        const body = "'use strict';\n" + body0
+        // console.log(body, scope)
+        const f = Function(...Object.keys(scope), body)
+        f(...Object.values(scope))
+      })
+      ws.onopen = function onopen() {
+        for (const e of Object.keys(exposed)) {
+          ws.send(JSON.stringify(["exposed", e]))
+        }
+      }
+      ws.onmessage = function onmessage(e) {
+        try {
+          const msg = JSON.parse(e.data)
+          if (msg.type == 'call') {
+            console.log(msg.name + '(' + msg.args.map(JSON.stringify).join(', ') + ')')
+            exposed[msg.name](...msg.args)
+          } else {
+            throw new Error(`Message not supported: ${msg}`)
+          }
+        } catch (e) {
+          console.log(e.data)
+          console.error(e)
+        }
+      }
+      console.log(exposed)
+    })()
+  </script>
+</head>
+<body style="background: #333; color: #eee;">hello?'
+</body>
+</html>

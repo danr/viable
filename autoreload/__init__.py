@@ -79,7 +79,8 @@ def serve(livepath, live_globals, flags):
             # todo: change to importlib.import_module
             # then this globals-fiddling won't be needed
             # the module's globals can be accessed using e.g sys.modules
-            filestr = open(livepath, 'r').read()
+            with open(livepath, 'r') as fp:
+                filestr = fp.read()
             co = compile(filestr, livepath, 'exec')
             state.reloads += 1
         except Exception:

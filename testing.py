@@ -2,78 +2,22 @@ import show
 import snoop
 snoop.install(pformat=show.show)
 
-from bottle import route, get, run, static_file
-from bottle import request, Bottle, abort
-from bottle.ext.websocket import GeventWebSocketServer, websocket
-from geventwebsocket.exceptions import WebSocketError
-from queue import Queue
-import threading
+from browserbridge import connection, b64png, dotdict
 import json
-
-PORT = 8234
-HOST = '127.0.0.1'
-
-class dotdict(dict):
-    __getattr__ = dict.get
-    __setattr__ = dict.__setitem__
-    __delattr__ = dict.__delitem__
 
 store = globals().get('store', dotdict())
 store.reloads = store.reloads or 0
 store.reloads += 1
-store.exposed = {}
+store.exposed = store.exposed or {}
+pp(store.exposed)
+store.exposed.clear()
+pp(store.exposed)
 
 def expose(f, name=None):
     name = name or f.__name__
     store.exposed[name] = f
     print('Exposed', name)
     return f
-
-@route('/ws', apply=[websocket])
-def handle_ws(ws):
-    print(f"handle_ws")
-    if store.ws:
-        print(f"closing old ws")
-        store.ws.close()
-    store.ws = ws
-    print(f"Got websocket!", store.reloads)
-    while True:
-        try:
-            msg_raw = ws.receive()
-            if not msg_raw:
-                break
-            try:
-                msg = json.loads(msg_raw)
-            except ValueError:
-                msg = None
-            if isinstance(msg, dict):
-                if msg.get('type') == 'call':
-                    print(f"{store.reloads} Calling: {msg!r}")
-                    store.exposed[msg['name']](*msg.get('args', []), **msg.get('kwargs', {}))
-            else:
-                print(f"{store.reloads} Received: {msg or msg_raw!r}")
-        except WebSocketError as e:
-            print(str(e))
-            break
-
-@get('/')
-@get('/index.html')
-def root():
-    return static_file('index.html', root='.')
-
-# store.bottle_init = False
-if not store.bottle_init:
-    store.bottle_init = True
-    def main():
-        run(host=HOST, port=PORT, debug=True, server=GeventWebSocketServer)
-    print('running main')
-    thread = threading.Thread(target=main, daemon=True)
-    thread.start()
-
-if not store.browser_init:
-    import subprocess
-    store.browser_init = True
-    subprocess.Popen(f'chromium --app=http://localhost:{PORT} --auto-open-devtools-for-tabs & disown', shell=True)
 
 class JS():
     '''
@@ -96,9 +40,13 @@ class JS():
                     args=args,
                 )
                 msg = json.dumps(msg)
-                self.ws.send(msg)
+                try:
+                    self.ws.send(msg)
+                except Exception as e:
+                    print('Websocket dead?', str(e))
+                    self.ws = None
             else:
-                raise RuntimeError('No websocket in self')
+                print('No websocket in self')
         return call
 
     def __call__(self, selector):
@@ -161,8 +109,9 @@ class JSSelectorAttr():
             self.js.add_attr(self.selector, attr, value)
             return self
 
+ws = connection(store.exposed)
 
-js = JS(store.ws)
+js = JS(ws)
 
 js.raw_eval('''
     console.log(reloads)
@@ -204,7 +153,9 @@ js('body').html = '''
   <h1>Major</h1>
   <div id=major></div>
   <h2>Minor</h1>
+  <img id=plot />
   <div id=minor></div>
+  <div id=counter></div>
   <div id=footer></div>
 '''
 
@@ -224,11 +175,21 @@ js('#minor').html += ' also this!'
 js('#minor').html += ' and this!'
 js('#minor').style += 'transform: rotate(-3deg);'
 
-if 0:
+import seaborn as sns
+p=sns.scatterplot(x=[0, 2, 3, 4], y=[1, 2, 3, 2])
+# pp(repr(p.figure), dir(p.figure))
+# pp(p.figure.savefig)
+import io
+buf = io.BytesIO()
+p.figure.savefig(buf, format='png')
+import base64
+js('#plot').src = b64png(buf)
+
+while True:
     x = 0
     while x < 3e6:
         x += 1
         if x % 1e5 == 0:
             print(x)
-            js.html(f'<pre>x: {x}</pre>')
+            js('#counter').html = f'<pre>x: {x}</pre>'
 

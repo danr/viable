@@ -1,21 +1,23 @@
+from __future__ import annotations
+from dataclasses import *
+from typing import *
+
 import show
 import snoop
 snoop.install(pformat=show.show)
+pp: Any
 
-from browserbridge import connection, b64png, dotdict
+from browserbridge import bridge
 import json
+from datetime import datetime
 
-store = globals().get('store', dotdict())
-store.reloads = store.reloads or 0
-store.reloads += 1
-store.exposed = store.exposed or {}
-pp(store.exposed)
-store.exposed.clear()
-pp(store.exposed)
+now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+cbs, ws_send = bridge()
 
 def expose(f, name=None):
     name = name or f.__name__
-    store.exposed[name] = f
+    cbs[name] = f
     print('Exposed', name)
     return f
 
@@ -23,31 +25,24 @@ class JS():
     '''
     Call an exposed javascript function.
     '''
-    def __init__(self, ws):
-        self.ws = ws
+    def __init__(self, ws_send):
+        self.ws_send = ws_send
+
+    def call(self, name, *args, **kws):
+        args = list(args)
+        if kws:
+            args += [kws]
+        msg = dict(
+            type='call',
+            name=name,
+            args=args,
+        )
+        self.ws_send(msg)
 
     def __getattr__(self, name):
         if name in ('shape', 'dtype'):
             raise AttributeError()
-        def call(*args, **kws):
-            if self.ws:
-                args = list(args)
-                if kws:
-                    args += [kws]
-                msg = dict(
-                    type='call',
-                    name=name,
-                    args=args,
-                )
-                msg = json.dumps(msg)
-                try:
-                    self.ws.send(msg)
-                except Exception as e:
-                    print('Websocket dead?', str(e))
-                    self.ws = None
-            else:
-                print('No websocket in self')
-        return call
+        return lambda *args, **kws: self.call(name, *args, **kws)
 
     def __call__(self, selector):
         return JSSelector(self, selector)
@@ -109,14 +104,12 @@ class JSSelectorAttr():
             self.js.add_attr(self.selector, attr, value)
             return self
 
-ws = connection(store.exposed)
-
-js = JS(ws)
+js = JS(ws_send)
 
 js.raw_eval('''
-    console.log(reloads)
-    ws.send("Reloads: " + reloads)
-''', reloads=store.reloads)
+    console.log("Reload: " + now)
+    ws.send(JSON.stringify('Reload: ' + now))
+''', now=now)
 
 js.raw_eval('''
   expose(function set_prop(sel, prop, value) { document.querySelector(sel)[prop] = value })
@@ -124,14 +117,6 @@ js.raw_eval('''
   expose(function add_prop(sel, prop, value) { document.querySelector(sel)[prop] += value })
   expose(function add_attr(sel, attr, value) { const e = document.querySelector(sel); e.setAttribute(attr, e.getAttribute(attr) + value) })
 ''')
-
-@expose
-def reply(*args, **kws):
-    value = kws.get('value')
-    if value:
-        js('#minor').html = str(value)
-    else:
-        print('reply', args, kws)
 
 import inspect
 def handler(f):
@@ -141,7 +126,7 @@ def handler(f):
             raise ValueError('Only positional or keyword params supported')
         head, *tail = param.name.split('_', 1)
         if head in ['target', 'currentTarget']:
-            args += [f'event?.{head}.{tail[0]}']
+            args += [f'event.{head}?.{tail[0]}']
         else:
             args += [f'event.{param.name}']
     name = hex(id(f))
@@ -162,18 +147,43 @@ js('body').html = '''
 js('#major').style = 'color:#99c; font-family: monospace; font-size: 5em;'
 js('#major').outerHTML = '<input id=txt type=text />'
 js('#txt').oninput = handler(lambda target_value: [
-    setattr(js('#minor'), 'html', pp(target_value)),
+    js('#minor').__setattr__('html', pp(target_value)),
     js('#footer').outerHTML.__iadd__(f'<pre>{pp(target_value)}</pre>'),
 ])
 
-js('#minor').html = 'lol #' + str(store.reloads)
+js('#minor').html = 'lol #' + now
 js('#minor').style = 'color:#9c9; font-family: monospace; font-size: 5em;'
 js('#minor').onclick = handler(lambda x, y: pp(x, y))
-# js('#minor').onclick = "pycall('reply', [event.x, event.y])"
 
 js('#minor').html += ' also this!'
 js('#minor').html += ' and this!'
 js('#minor').style += 'transform: rotate(-3deg);'
+
+def b64(data, mime=None):
+    import io
+    import base64
+    if isinstance(data, io.BytesIO):
+        data = data.getvalue()
+    if isinstance(data, str):
+        data = data.encode()
+    data = base64.b64encode(data).decode()
+    if mime:
+        return f'data:{mime};base64,{data}'
+    else:
+        return data
+
+def b64png(data):
+    return b64(data, mime='image/png')
+
+def b64svg(data):
+    return b64(data, mime='image/svg+xml')
+
+def b64jpg(data):
+    return b64(data, mime='image/jpeg')
+
+def b64gif(data):
+    return b64(data, mime='image/gif')
+
 
 import seaborn as sns
 p=sns.scatterplot(x=[0, 2, 3, 4], y=[1, 2, 3, 2])

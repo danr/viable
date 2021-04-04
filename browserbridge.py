@@ -1,136 +1,147 @@
-from bottle import route, get, run, static_file
-from bottle import request, Bottle, abort
+from __future__ import annotations
+from dataclasses import *
+from typing import *
+
+import bottle
+from bottle import route, get, static_file
 from bottle.ext.websocket import GeventWebSocketServer, websocket
 from geventwebsocket.exceptions import WebSocketError
-from queue import SimpleQueue
+
+import atexit
 import threading
 import json
+import os
+import socket
+import subprocess
+import sys
 
-class dotdict(dict):
-    __getattr__ = dict.get
-    __setattr__ = dict.__setitem__
-    __delattr__ = dict.__delitem__
+def oneliner(raw_msg: bytes) -> bytes:
+    '''
+    Return a copy of the message with only a newline at the end,
+    reformatting its json if necessary.
+    '''
+    raw_msg = raw_msg.strip()
+    if b'\n' in raw_msg:
+        raw_msg = json.dumps(json.loads(raw_msg.decode())).encode()
+        assert b'\n' not in raw_msg
+    return raw_msg + b'\n'
 
-store = globals().get('store', dotdict())
-store.reloads = store.reloads or 0
-store.reloads += 1
-
-class Cell:
-    def __init__(initial=None):
-        self.value = initial
-        self.cv = threading.Condition()
-
-    def put(self, value):
-        with self.cv:
-            self.value = value
-            self.cv.notify_all()
-
-    def get(self):
-        with self.cv:
-            value, = self.wait_for(lambda: 0 if self.value is None else [self.value])
-            return value
-
-def spawn(f):
+def spawn(f: Callable[[], None]) -> None:
     threading.Thread(target=f, daemon=True).start()
 
-PORT = 8234
-HOST = '127.0.0.1'
+def bridge(sockfile='.brbr') -> [dict[str, Callable], Callable[[Any], None]]:
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(sockfile) # for now you need to start it manually
 
-def start_bottle():
+    cbs: dict[str, Callable] = {}
 
-    ws_queue = SimpleQueue()
+    # forward msgs on unix socket to exposed python function handlers
+    def on_msg(msg_raw: bytes) -> None:
+        try:
+            msg = json.loads(msg_raw)
+        except ValueError:
+            msg = None
+        if isinstance(msg, dict):
+            if msg.get('type') == 'call':
+                print(f"Calling: {msg!r}")
+                cb = cbs.get(msg['name'])
+                if cb:
+                    cb(*msg.get('args', []), **msg.get('kwargs', {}))
+                    return
+        print(f'Unhandled: {msg_raw!r}')
 
-    def pop_ws():
-        return ws_queue.get()
+    spawn(lambda: socket_msg_handler(s, on_msg))
 
-    @route('/ws', apply=[websocket])
-    def handle_ws(ws):
-        print(f"handle_ws: got websocket, putting on queue...")
-        reply_chan = SimpleQueue()
-        ws_queue.put((ws, reply_chan))
-        cbs, onclose = reply_chan.get()
-        while True:
-            try:
-                msg_raw = ws.receive()
-            except WebSocketError as e:
-                print(str(e))
-                break
-            if not msg_raw:
-                break
-            try:
-                msg = json.loads(msg_raw)
-            except ValueError:
-                msg = None
-            if isinstance(msg, dict):
-                if msg.get('type') == 'call':
-                    print(f"{store.reloads} Calling: {msg!r}")
-                    cbs[msg['name']](*msg.get('args', []), **msg.get('kwargs', {}))
-            else:
-                print(f"{store.reloads} Received: {msg or msg_raw!r}")
-        onclose and onclose()
+    return cbs, lambda msg: s.sendall(json.dumps(msg).encode() + b'\n')
 
-    @get('/')
-    @get('/index.html')
-    def root():
-        return static_file('index.html', root='.')
-
-    # store.bottle_init = False
-    if not store.bottle_init:
-        store.bottle_init = True
-        @spawn
-        def main():
-            print('running main')
-            run(host=HOST, port=PORT, debug=True, server=GeventWebSocketServer)
-
-    return dotdict(pop_ws=pop_ws)
-
-def get_bottle():
-    if not store.bottle:
-        store.bottle = start_bottle()
-    return store.bottle
-
-def get_connection(cbs, onclose=None):
-    ws, reply_chan = get_bottle().pop_ws()
-    reply_chan.put([cbs, onclose])
-    return ws
-
-def connection(cbs, start_browser=True):
-    if start_browser and not store.browser_init:
-        import subprocess
-        store.browser_init = True
-        subprocess.Popen(f'chromium --app=http://localhost:{PORT} --auto-open-devtools-for-tabs & disown', shell=True)
-    if not store.ws:
-        store.ws = get_connection(cbs, onclose=lambda: delattr(store, 'ws'))
-    return store.ws
-
-def serve(h):
+def socket_msg_handler(conn: socket.socket, on_msg: Callable[[bytes], None]) -> None:
+    data = b''
     while True:
-        cbs = {}
-        ws = get_connection(cbs)
-        spawn(lambda: h(cbs, ws))
+        while b'\n' not in data:
+            recv = conn.recv(4096)
+            data += recv
+            if not recv:
+                return
+        msgs = data.splitlines(True)
+        if not msgs[-1].endswith(b'\n'):
+            data = msgs.pop()
+        else:
+            data = b''
+        for msg in msgs:
+            on_msg(msg[:-1])
 
-def b64(data, mime=None):
-    import io
-    import base64
-    if isinstance(data, io.BytesIO):
-        data = data.getvalue()
-    if isinstance(data, str):
-        data = data.encode()
-    data = base64.b64encode(data).decode()
-    if mime:
-        return f'data:{mime};base64,{data}'
-    else:
-        return data
+@dataclass
+class State:
+    conn: socket.socket | None = None
+    ws: websocket | None = None
 
-def b64png(data):
-    return b64(data, mime='image/png')
+state = State()
 
-def b64svg(data):
-    return b64(data, mime='image/svg+xml')
+def serve(sockfile='.brbr', port=8234, host='127.0.0.1', start_browser=True) -> None:
+    atexit.register(lambda: os.remove(sockfile))
+    print(sockfile)
+    with socket.socket(socket.AF_UNIX) as s:
+        s.bind(sockfile)
+        s.listen(1)
 
-def b64jpg(data):
-    return b64(data, mime='image/jpeg')
+        @spawn
+        def start_bottle() -> None:
+            print('starting bottle...')
+            bottle.run(host=host, port=port, debug=True, server=GeventWebSocketServer)
 
-def b64gif(data):
-    return b64(data, mime='image/gif')
+        if start_browser:
+            subprocess.run(f'''
+                chromium --app=http://localhost:{port} --auto-open-devtools-for-tabs & disown
+            ''', shell=True)
+
+        while True:
+            conn, _ = s.accept()
+            with conn:
+                # forward msgs on unix socket to web socket
+                state.conn = conn
+                def on_msg(msg):
+                    if ws := state.ws:
+                        ws.send(msg.decode())
+                socket_msg_handler(conn, on_msg)
+            state.conn = None
+
+
+@route('/ws', apply=[websocket])
+def handle_ws(ws: websocket) -> None:
+    print(f"handle_ws: got websocket, putting on queue...")
+    if state.ws is not None:
+        if state.conn:
+            print(f"Websocket already paired with unix socket, skipping this one...")
+            return
+        else:
+            print(f"Changing to new websocket")
+            return
+    state.ws = ws
+    while True:
+        try:
+            msg_raw = ws.receive()
+        except WebSocketError as e:
+            print(str(e))
+            break
+        if msg_raw is None:
+            print('Received None on websocket')
+            break
+        # print(f"Received: {msg_raw!r}")
+        msg_raw = oneliner(msg_raw.encode())
+        # print(f"Sending: {msg_raw!r}")
+        if conn := state.conn:
+            conn.sendall(msg_raw)
+    if conn := state.conn:
+        print('websocket closed so closing unix socket')
+        state.conn = None
+        conn.close()
+    state.ws = None
+
+@get('/')
+@get('/index.html')
+def root() -> None:
+    return static_file('index.html', root='.')
+
+if '--serve' in sys.argv:
+    serve()
 

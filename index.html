@@ -42,7 +42,7 @@
         try {
           const msg = JSON.parse(e.data)
           if (msg.type == 'call') {
-            console.log(msg.name + '(' + msg.args.map(JSON.stringify).join(', ') + ')')
+            console.debug(msg.name + '(' + msg.args.map(JSON.stringify).join(', ') + ')')
             exposed[msg.name](...msg.args)
           } else {
             throw new Error(`Message not supported: ${msg}`)
@@ -52,7 +52,7 @@
           console.error(e)
         }
       }
-      console.log(exposed)
+      console.debug(exposed)
     })()
   </script>
 </head>

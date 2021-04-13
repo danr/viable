@@ -62,6 +62,11 @@ def show(x, show_key=str, width=80):
 
     return '\n'.join(go('', '', x, ''))
 
-import snoop
-snoop.install(pformat=show)
+from typing import TypeVar
+
+A = TypeVar('A')
+
+def pr(x: A) -> A:
+    print(show(x))
+    return x
 

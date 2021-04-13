@@ -9,10 +9,10 @@
       window.ws = ws
       const exposed = []
       function expose(f, name) {
-        const e = f.name || name
-        exposed[e] = f
+        const fname = f.name || name
+        exposed[fname] = f
         if (ws?.readyState == WebSocket.OPEN) {
-          ws.send(JSON.stringify(["exposed", e]))
+          console.log('exposed', fname, f)
         }
       }
       expose(function raw_eval(body0, scope0) {
@@ -34,9 +34,7 @@
       }
       window.pycall = pycall
       ws.onopen = function onopen() {
-        for (const e of Object.keys(exposed)) {
-          ws.send(JSON.stringify(["exposed", e]))
-        }
+        console.log('websocket opened', ws)
       }
       ws.onmessage = function onmessage(e) {
         try {

@@ -14,6 +14,8 @@ import os
 import socket
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 def oneliner(raw_msg: bytes) -> bytes:
     '''
@@ -29,9 +31,18 @@ def oneliner(raw_msg: bytes) -> bytes:
 def spawn(f: Callable[[], None]) -> None:
     threading.Thread(target=f, daemon=True).start()
 
-def bridge(sockfile='.brbr') -> [dict[str, Callable], Callable[[Any], None]]:
+sockfile = 'browserbridge.socket'
+
+def low_level_client() -> [dict[str, Callable], Callable[[Any], None]]:
+    if not Path(sockfile).is_socket():
+        print('spawning...')
+        subprocess.run('python -m browserbridge --serve & disown', shell=True)
+        while not Path(sockfile).is_socket():
+            print('busy wait...')
+            time.sleep(0.1)
+
     s = socket.socket(socket.AF_UNIX)
-    s.connect(sockfile) # for now you need to start it manually
+    s.connect(sockfile)
 
     cbs: dict[str, Callable] = {}
 
@@ -70,6 +81,8 @@ def socket_msg_handler(conn: socket.socket, on_msg: Callable[[bytes], None]) -> 
         for msg in msgs:
             on_msg(msg[:-1])
 
+from queue import SimpleQueue
+
 @dataclass
 class State:
     conn: socket.socket | None = None
@@ -77,7 +90,7 @@ class State:
 
 state = State()
 
-def serve(sockfile='.brbr', port=8234, host='127.0.0.1', start_browser=True) -> None:
+def serve(port=8234, host='127.0.0.1', start_browser=True) -> None:
     atexit.register(lambda: os.remove(sockfile))
     print(sockfile)
     with socket.socket(socket.AF_UNIX) as s:
@@ -100,8 +113,9 @@ def serve(sockfile='.brbr', port=8234, host='127.0.0.1', start_browser=True) -> 
                 # forward msgs on unix socket to web socket
                 state.conn = conn
                 def on_msg(msg):
-                    if ws := state.ws:
-                        ws.send(msg.decode())
+                    while not (ws := state.ws):
+                        time.sleep(0.1)
+                    ws.send(msg.decode())
                 socket_msg_handler(conn, on_msg)
             state.conn = None
 
@@ -142,6 +156,9 @@ def handle_ws(ws: websocket) -> None:
 def root() -> None:
     return static_file('index.html', root='.')
 
-if '--serve' in sys.argv:
-    serve()
+if __name__ == '__main__':
+    if sys.argv[1:2] == ['--serve']:
+        serve()
+    else:
+        print('No such arguments:', sys.argv)
 

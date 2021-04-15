@@ -1,6 +1,4 @@
-# viable
 
-```python
 from viable import serve, request, xmlesc
 
 @serve
@@ -29,8 +27,3 @@ def SimpleFlaskHMR(path='/'):
             <pre>{xmlesc(str(path))}</pre>
             {' '.join(map(str, range(5000)))}
     '''
-```
-
-```sh
-ls *py | entr -r python example.py
-```

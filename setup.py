@@ -1,31 +1,16 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 
-try:
-    long_description = open("README.md").read()
-except IOError:
-    long_description = ""
+long_description = open('README.md').read()
 
 setup(
-    name="python-autoreload",
-    version="0.1.0",
-    description="Python autoreload library",
-    license="MIT",
-    author="Dan Rosén",
-    entry_points={
-        'console_scripts': [
-            'python-autoreload = autoreload:main',
-        ]
-    },
-    py_modules=["autoreload"],
-    packages=['autoreload'],
-    package_data={
-        '.': ["*.js"],
-    },
-    install_requires=[ r for r in open("requirements.txt").read().split('\n') if not r.startswith('#') ],
+    name='viable',
+    version='0.1.0',
+    description='Python viable library',
+    url='https://github.com/danr/viable',
+    license='MIT',
+    author='Dan Rosén',
+    author_email='danr42@gmail.com',
+    py_modules=['viable'],
+    install_requires=['flask'],
     long_description=long_description,
-    classifiers=[
-        "Programming Language :: Python",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9",
-    ]
 )

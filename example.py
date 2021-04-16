@@ -1,29 +1,30 @@
 
-from viable import serve, request, xmlesc
+from viable import serve, request, esc
 
 @serve
 def SimpleFlaskHMR(path='/'):
     return '''
-            <style>
-                body {
-                    width: 900px;
-                    margin: 5px auto;
-                    font-family: sans;
-                }
-            </style>
-            <form
-                onsubmit="set_query(this); refresh(); return false"
-                noninput="set_query(this); refresh(); return false"
-            >
+        <style>
+            body {
+                width: 900px;
+                margin: 5px auto;
+                font-family: sans;
+            }
+        </style>
     ''' + f'''
-            {' '.join(map(str, range(5000)))}
-                <input type=text name="jax" id="jax" value="{xmlesc(request.args.get('jax', ''))}" />
-                <input type=text name="jox" id="jox" value="{xmlesc(request.args.get('jox', ''))}"
-                />
-                <button id=submit type=submit>heh</button>
-                hmm
-            </form>
-            <pre>{xmlesc(str(request.args))}</pre>
-            <pre>{xmlesc(str(path))}</pre>
-            {' '.join(map(str, range(5000)))}
+        {' '.join(map(str, range(1000)))}
+        <pre>{esc(str(request.args))}</pre>
+        <pre>{esc(str(path))}</pre>
+        <form
+            onsubmit="set_query(this); refresh(); return false"
+            onchange="set_query(this); refresh(); return false"
+            noninput="set_query(this); refresh(); return false"
+        >
+            <input type=text name="jax" id="jax" value="{esc(request.args.get('jax', ''))}" />
+            <input type=text name="jox" id="jox" value="{esc(request.args.get('jox', ''))}" />
+            <button id=submit type=submit>heh</button>
+        </form>
+        {' '.join(map(str, range(1000)))}
     '''
+
+

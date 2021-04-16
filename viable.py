@@ -1,4 +1,5 @@
 from flask import Flask, request
+from textwrap import dedent
 app = Flask(__name__)
 
 __table = str.maketrans({
@@ -9,7 +10,7 @@ __table = str.maketrans({
     '"': "&quot;",
 })
 
-def xmlesc(txt):
+def esc(txt):
     return txt.translate(__table)
 
 def serve(f):
@@ -110,8 +111,8 @@ def serve(f):
     @app.route('/ping')
     def ping():
         import time
-        time.sleep(25)
-        return 'pong'
+        time.sleep(115)
+        return f'pong\n'
 
     @app.route('/favicon.ico')
     def favicon():
@@ -121,23 +122,32 @@ def serve(f):
     @app.route('/<path:path>')
     def index(path=None):
         try:
-            if path is None:
-                body = f()
+            if isinstance(f, str):
+                body = f
+                title = ''
             else:
-                body = f(path)
+                if path is None:
+                    body = f()
+                else:
+                    body = f(path)
+                title = f.__name__
         except Exception as e:
             import traceback as tb
-            body = f'<pre>{xmlesc(tb.format_exc())}</pre><link href=/traceback.css rel=stylesheet>'
-        return f'''
+            body = f'<pre>{esc(tb.format_exc())}</pre>'
+            body += '<link href=/traceback.css rel=stylesheet>'
+            title = 'error'
+        return dedent('''
             <!DOCTYPE html>
             <html lang="en">
             <head>
             <meta charset="utf-8" />
-            <title>{f.__name__}</title>
+            <title>{title}</title>
             <script defer src="/hmr.js"></script>
             </head>
-            <body>{body}</body>
+            <body>
+            {body}
+            </body>
             </html>
-        '''
+        ''').strip().format(title=title, body=body)
 
     app.run()

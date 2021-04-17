@@ -1,5 +1,6 @@
 from flask import Flask, request
 from textwrap import dedent
+import time
 app = Flask(__name__)
 
 __table = str.maketrans({
@@ -146,7 +147,6 @@ def serve(f):
 
     @app.route('/ping')
     def ping():
-        import time
         time.sleep(115)
         return f'pong\n'
 

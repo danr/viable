@@ -17,42 +17,76 @@ def serve(f):
     @app.route('/hmr.js')
     def hmr():
         return '''
-            async function refresh(i, and_then) {
-                try {
-                    const resp = await fetch(window.location.href)
-                    const text = await resp.text()
-                    const parser = new DOMParser();
-                    const doc = parser.parseFromString(text, "text/html");
-                    const focus_elem = document.activeElement
-                    const focus_id = focus_elem?.id
-                    const focus_range = focus_elem && [
-                        focus_elem.selectionStart,
-                        focus_elem.selectionEnd,
-                        focus_elem.selectionDirection,
-                    ]
-                    document.body.replaceWith(doc.body)
-                    const new_focus_elem = document.getElementById(focus_id)
-                    if (new_focus_elem) {
-                        try {
-                            new_focus_elem.focus()
-                            if (focus_range
-                                    && new_focus_elem.setSelectionRange
-                                    && new_focus_elem.type !== 'radio'
-                                    && new_focus_elem.type !== 'range'
-                                ) {
-                                new_focus_elem.setSelectionRange(...focus_range)
-                            }
-                        } catch(e) {
-                            console.warn(e)
+            function morph(prev, next) {
+                if (
+                    prev.nodeType === Node.ELEMENT_NODE &&
+                    next.nodeType === Node.ELEMENT_NODE &&
+                    prev.tagName === next.tagName
+                ) {
+                    if (
+                        prev.hasAttribute('replace') ||
+                        next.hasAttribute('replace')
+                    ) {
+                        prev.replaceWith(next)
+                        return
+                    }
+                    for (let name of prev.getAttributeNames()) {
+                        if (!next.hasAttribute(name)) {
+                            prev.removeAttribute(name)
                         }
                     }
-                    and_then && and_then()
+                    for (let name of next.getAttributeNames()) {
+                        if (
+                            !prev.hasAttribute(name) ||
+                            next.getAttribute(name) !== prev.getAttribute(name)
+                        ) {
+                            prev.setAttribute(name, next.getAttribute(name))
+                        }
+                    }
+                    const pc = [...prev.childNodes]
+                    const nc = [...next.childNodes]
+                    const num_max = Math.max(pc.length, nc.length)
+                    for (let i = 0; i < num_max; ++i) {
+                        if (i >= nc.length) {
+                            prev.removeChild(pc[i])
+                        } else if (i >= pc.length) {
+                            prev.appendChild(nc[i])
+                        } else {
+                            morph(pc[i], nc[i])
+                        }
+                    }
+                } else if (
+                    prev.nodeType === Node.TEXT_NODE &&
+                    next.nodeType === Node.TEXT_NODE
+                ) {
+                    if (prev.textContent !== next.textContent) {
+                        prev.textContent = next.textContent
+                    }
+                } else {
+                    prev.replaceWith(next)
+                }
+            }
+            async function refresh(i=0, and_then) {
+                let text = null
+                try {
+                    const resp = await fetch(window.location.href)
+                    text = await resp.text()
                 } catch (e) {
                     if (i > 0) {
                         window.setTimeout(() => refresh(i-1, and_then), i < 300 ? 1000 : 16)
                     } else {
                         console.warn('timeout', e)
                     }
+                }
+                if (text !== null) {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(text, "text/html");
+                    try {
+                        morph(document.body, doc.body)
+                    } catch(e) {
+                        console.warn(e)
+                    }
+                    and_then && and_then()
                 }
             }
             async function long_poll() {

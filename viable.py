@@ -148,6 +148,8 @@ def serve(f):
             <!DOCTYPE html>
             <html lang="en">
             <head>
+            <!-- favicon because of chromium bug, see https://stackoverflow.com/a/36104057 -->
+            <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgo=">
             <meta charset="utf-8" />
             <title>{title}</title>
             <script defer src="/hmr.js"></script>

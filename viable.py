@@ -67,7 +67,16 @@ def serve(f):
                     prev.replaceWith(next)
                 }
             }
+            let in_progress = false
+            let rejected = false
             async function refresh(i=0, and_then) {
+                if (!and_then) {
+                    if (in_progress) {
+                        rejected = true
+                        return
+                    }
+                    in_progress = true
+                }
                 let text = null
                 try {
                     const resp = await fetch(window.location.href)
@@ -80,9 +89,9 @@ def serve(f):
                     }
                 }
                 if (text !== null) {
-                    const parser = new DOMParser();
-                    const doc = parser.parseFromString(text, "text/html");
                     try {
+                        const parser = new DOMParser()
+                        const doc = parser.parseFromString(text, "text/html")
                         morph(document.body, doc.body)
                         for (let script of document.querySelectorAll('script[eval]')) {
                             const global_eval = eval
@@ -91,7 +100,15 @@ def serve(f):
                     } catch(e) {
                         console.warn(e)
                     }
-                    and_then && and_then()
+                    if (and_then) {
+                        and_then()
+                    } else if (in_progress) {
+                        in_progress = false
+                        if (rejected) {
+                            rejected = false
+                            refresh()
+                        }
+                    }
                 }
             }
             async function long_poll() {

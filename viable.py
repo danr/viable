@@ -44,6 +44,10 @@ def serve(f):
                             prev.setAttribute(name, next.getAttribute(name))
                         }
                     }
+                    if (prev.tagName === 'INPUT' && document.activeElement !== prev) {
+                        prev.value = next.getAttribute('value')
+                        prev.checked = next.hasAttribute('checked')
+                    }
                     const pc = [...prev.childNodes]
                     const nc = [...next.childNodes]
                     const num_max = Math.max(pc.length, nc.length)

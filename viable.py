@@ -150,10 +150,6 @@ def serve(f):
         time.sleep(115)
         return f'pong\n'
 
-    @app.route('/favicon.ico')
-    def favicon():
-        return ''
-
     @app.route('/')
     @app.route('/<path:path>')
     def index(path=None):

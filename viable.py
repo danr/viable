@@ -123,6 +123,7 @@ def serve(f):
                 }
             }
             long_poll()
+            window.onpopstate = () => refresh()
             function set_query(q) {
                 if (typeof q === 'string' && q[0] == '#') {
                     q = document.querySelector(q)

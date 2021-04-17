@@ -33,9 +33,17 @@ def serve(f):
                     document.body.replaceWith(doc.body)
                     const new_focus_elem = document.getElementById(focus_id)
                     if (new_focus_elem) {
-                        new_focus_elem.focus()
-                        if (focus_range && new_focus_elem.setSelectionRange) {
-                            new_focus_elem.setSelectionRange(...focus_range)
+                        try {
+                            new_focus_elem.focus()
+                            if (focus_range
+                                    && new_focus_elem.setSelectionRange
+                                    && new_focus_elem.type !== 'radio'
+                                    && new_focus_elem.type !== 'range'
+                                ) {
+                                new_focus_elem.setSelectionRange(...focus_range)
+                            }
+                        } catch(e) {
+                            console.warn(e)
                         }
                     }
                     and_then && and_then()

@@ -67,7 +67,6 @@ def serve(f):
                 if (typeof q === 'string' && q[0] == '#') {
                     q = document.querySelector(q)
                 }
-                console.log(q)
                 if (q instanceof HTMLFormElement) {
                     q = new FormData(q)
                 } else if (q && typeof q === 'object') {
@@ -75,15 +74,11 @@ def serve(f):
                     q = new FormData()
                     for (let [k, v] of kvs) {
                         q.append(k, v)
-                        console.log(q, k, v)
                     }
-                    console.log(q)
                 }
-                console.log(q)
                 if (q instanceof FormData) {
                     q = '?' + new URLSearchParams(q).toString()
                 }
-                console.log(q)
                 if (typeof q[0] === 'string' && q[0] == '?') {
                     next = location.href
                     if (next.indexOf('?') == -1 || !location.search) {
@@ -91,7 +86,6 @@ def serve(f):
                     } else {
                         next = next.replace(location.search, q)
                     }
-                    console.log(next)
                     history.pushState(null, null, next)
                 } else {
                     console.warn('Not a valid query', q)

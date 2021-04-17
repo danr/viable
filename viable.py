@@ -84,6 +84,10 @@ def serve(f):
                     const doc = parser.parseFromString(text, "text/html");
                     try {
                         morph(document.body, doc.body)
+                        for (let script of document.querySelectorAll('script[eval]')) {
+                            const global_eval = eval
+                            global_eval(script.textContent)
+                        }
                     } catch(e) {
                         console.warn(e)
                     }

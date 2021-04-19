@@ -1,17 +1,45 @@
 from flask import Flask, request
 from textwrap import dedent
+from dataclasses import dataclass
 import time
+import sys
+import re
+
+import inspect
+
+@dataclass(frozen=True)
+class head:
+    content: str
+
+def flatten(cs):
+    if isinstance(cs, tuple) or isinstance(cs, list):
+        return [v for c in cs for v in flatten(c)]
+    else:
+        return [cs]
+
+def partition(cs, by):
+    y, n = [], []
+    for c in cs:
+        if by(c):
+            y += [c]
+        else:
+            n += [c]
+    return y, n
+
+def partition_heads(cs):
+    y, n = partition(flatten(cs), by=lambda c: isinstance(c, head))
+    y = [hd.content.strip() for hd in y]
+    return y, n
+
 app = Flask(__name__)
 
-__table = str.maketrans({
+def esc(txt: str, __table = str.maketrans({
     "<": "&lt;",
     ">": "&gt;",
     "&": "&amp;",
     "'": "&apos;",
     '"': "&quot;",
-})
-
-def esc(txt):
+})) -> str:
     return txt.translate(__table)
 
 from itsdangerous.url_safe import URLSafeSerializer
@@ -71,11 +99,14 @@ def serve(f):
                     next.nodeType === Node.ELEMENT_NODE &&
                     prev.tagName === next.tagName
                 ) {
-                    if (
-                        prev.hasAttribute('replace') ||
-                        next.hasAttribute('replace')
-                    ) {
+                    if (next.hasAttribute('replace')) {
                         prev.replaceWith(next)
+                        return
+                    }
+                    if (
+                        next.hasAttribute('protect')
+                        // && prev.id === next.id ?
+                    ) {
                         return
                     }
                     for (let name of prev.getAttributeNames()) {
@@ -143,6 +174,7 @@ def serve(f):
                     try {
                         const parser = new DOMParser()
                         const doc = parser.parseFromString(text, "text/html")
+                        morph(document.head, doc.head)
                         morph(document.body, doc.body)
                         for (let script of document.querySelectorAll('script[eval]')) {
                             const global_eval = eval
@@ -194,7 +226,7 @@ def serve(f):
                     } else {
                         next = next.replace(location.search, q)
                     }
-                    history.pushState(null, null, next)
+                    history.replaceState(null, null, next)
                 } else {
                     console.warn('Not a valid query', q)
                 }
@@ -202,7 +234,7 @@ def serve(f):
         '''
 
     @app.route('/traceback.css')
-    def traceback():
+    def traceback_css():
         return '''
             body {
                 margin: 0 auto;
@@ -226,35 +258,44 @@ def serve(f):
     @app.route('/')
     @app.route('/<path:path>')
     def index(path=None):
+        parts = []
         try:
             if isinstance(f, str):
-                body = f
+                parts = f
                 title = ''
             else:
                 if path is None:
-                    body = f()
+                    parts = f()
                 else:
-                    body = f(path)
+                    parts = f(path)
                 title = f.__name__
         except Exception as e:
             import traceback as tb
-            body = f'<pre>{esc(tb.format_exc())}</pre>'
-            body += '<link href=/traceback.css rel=stylesheet>'
             title = 'error'
+            parts = [
+               head('<link href=/traceback.css rel=stylesheet>'),
+               head('<title>error</title>'),
+               f'<pre>{esc(tb.format_exc())}</pre>'
+            ]
+        heads, bodies = partition_heads(parts)
+        if not any(re.search('^\s*<\s*title\b', hd) for hd in heads):
+            heads += [f'<title>{title}</title>']
+        if not any(re.search('^\s*<\s*link\s+rel=.?\bicon\b', hd) for hd in heads):
+            # <!-- favicon because of chromium bug, see https://stackoverflow.com/a/36104057 -->
+            heads += ['<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgo=">']
         return dedent('''
-            <!DOCTYPE html>
+            <!doctype html>
             <html lang="en">
             <head>
-            <!-- favicon because of chromium bug, see https://stackoverflow.com/a/36104057 -->
-            <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgo=">
             <meta charset="utf-8" />
-            <title>{title}</title>
-            <script defer src="/hmr.js"></script>
+            <script defer src="/hot.js"></script>
+            {head}
             </head>
             <body>
             {body}
             </body>
             </html>
-        ''').strip().format(title=title, body=body)
+        ''').strip().format(head='\n'.join(heads), body='\n'.join(bodies))
 
-    app.run()
+    if sys.argv[0].endswith('.py'):
+        app.run()

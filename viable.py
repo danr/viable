@@ -14,10 +14,57 @@ __table = str.maketrans({
 def esc(txt):
     return txt.translate(__table)
 
+from itsdangerous.url_safe import URLSafeSerializer
+import secrets
+
+__serializer = URLSafeSerializer(secrets.token_hex(32))
+
+__exposed = dict()
+
+def expose(f, *args, **kws):
+    name = f.__name__
+    is_lambda = name == '<lambda>'
+    if is_lambda:
+        # note: memory leak
+        name += str(len(__exposed))
+    if name in __exposed:
+        assert __exposed[name] == f
+    __exposed[name] = f
+    def inner(*args, **kws):
+        msg = __serializer.dumps((name, *args, kws))
+        return repr(f'/call/{msg}')
+    if args or kws or name.startswith('<lambda>'):
+        return inner(*args, **kws)
+    else:
+        return inner
+
 def serve(f):
-    @app.route('/hmr.js')
-    def hmr():
+
+    @app.route('/call/<msg>', methods=['POST'])
+    def call(msg):
+        try:
+            name, *args, kws = __serializer.loads(msg)
+            more_args = request.json["args"]
+            ret = __exposed[name](*args, *more_args, **kws)
+            if ret is None:
+                return '', 204
+            else:
+                return ret
+        except:
+            import traceback as tb
+            tb.print_exc()
+            return '', 400
+
+    @app.route('/hot.js')
+    def hot_js():
         return '''
+            function call(url, ...args) {
+                return fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ args: args }),
+                })
+            }
             function morph(prev, next) {
                 if (
                     prev.nodeType === Node.ELEMENT_NODE &&

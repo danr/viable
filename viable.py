@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import time
 import sys
 import re
+import gzip
 
 import inspect
 
@@ -60,7 +61,7 @@ def expose(f, *args, **kws):
     __exposed[name] = f
     def inner(*args, **kws):
         msg = __serializer.dumps((name, *args, kws))
-        return repr(f'/call/{msg}')
+        return f"'/call/{msg}'"
     if args or kws or name.startswith('<lambda>'):
         return inner(*args, **kws)
     else:
@@ -283,7 +284,7 @@ def serve(f):
         if not any(re.search('^\s*<\s*link\s+rel=.?\bicon\b', hd) for hd in heads):
             # <!-- favicon because of chromium bug, see https://stackoverflow.com/a/36104057 -->
             heads += ['<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgo=">']
-        return dedent('''
+        html = dedent('''
             <!doctype html>
             <html lang="en">
             <head>
@@ -296,6 +297,7 @@ def serve(f):
             </body>
             </html>
         ''').strip().format(head='\n'.join(heads), body='\n'.join(bodies))
+        return gzip.compress(html.encode()), {'Content-Encoding': 'gzip'}
 
     if sys.argv[0].endswith('.py'):
         app.run()

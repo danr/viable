@@ -40,7 +40,6 @@ def make_classes(html: str) -> tuple[head, str]:
     )
     return head(f'<style>{style}</style>'), html_out
 
-app = Flask(__name__)
 
 def esc(txt: str, __table: dict[int, str] = str.maketrans({
     "<": "&lt;",
@@ -70,6 +69,8 @@ def expose(f: Callable[..., Any], *args: Any, **kws: Any) -> Callable[..., Any]:
     else:                                            #
         inner.call = lambda *a, **ka: f(*a, **ka)    # type: ignore
         return inner                                 # type: ignore
+
+app = Flask(__name__)
 
 def serve(f: Callable[..., str | Iterable[head | str]]):
 
@@ -333,4 +334,4 @@ def serve(f: Callable[..., str | Iterable[head | str]]):
 
     if sys.argv[0].endswith('.py'):
         import os
-        app.run(host=os.environ.get('VIABLE_HOST'))
+        app.run(host=os.environ.get('VIABLE_HOST'), port=os.environ.get('VIABLE_PORT'))

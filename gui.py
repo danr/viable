@@ -1,17 +1,11 @@
 from __future__ import annotations
 from typing import *
 
-from utils import show
-
-from dataclasses import *
-
 from flask import request
-import time
-import textwrap
 
-from viable import head, serve, esc, make_classes, expose, app
-import utils
-from utils import catch
+from viable import head, serve, esc, expose
+
+from pprint import pformat
 
 # suppress flask logging
 import logging
@@ -130,5 +124,5 @@ def index() -> Iterator[head | str]:
             server_redraws
         """.split()
     }
-    yield f'''<pre style="user-select: text">{show(scope, use_color=False, width=40)}</pre>'''
+    yield f'''<pre style="user-select: text">{pformat(scope, width=40)}</pre>'''
 

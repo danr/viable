@@ -1,40 +1,48 @@
-from flask import Flask, request
-from textwrap import dedent
-from dataclasses import dataclass
-import time
-import sys
-import re
-import gzip
+from __future__ import annotations
+from typing import *
 
+from dataclasses import dataclass
+from flask import Flask, request
+import textwrap
+import gzip
 import inspect
+import re
+import sys
+import time
+import pickle
+
+from itsdangerous.url_safe import URLSafeSerializer # type: ignore
+import secrets
+
+__serializer = URLSafeSerializer(secrets.token_hex(32), serializer=pickle) # type: ignore
 
 @dataclass(frozen=True)
 class head:
     content: str
 
-def flatten(cs):
-    if isinstance(cs, tuple) or isinstance(cs, list):
-        return [v for c in cs for v in flatten(c)]
-    else:
-        return [cs]
-
-def partition(cs, by):
-    y, n = [], []
-    for c in cs:
-        if by(c):
-            y += [c]
+def make_classes(html: str) -> tuple[head, str]:
+    classes: dict[str, str] = {}
+    def repl(m: re.Match[str]) -> str:
+        decls = textwrap.dedent(m.group(1)).strip()
+        if decls in classes:
+            name = classes[decls]
         else:
-            n += [c]
-    return y, n
+            name = f'css-{len(classes)}'
+            classes[decls] = name
+        return name
 
-def partition_heads(cs):
-    y, n = partition(flatten(cs), by=lambda c: isinstance(c, head))
-    y = [hd.content.strip() for hd in y]
-    return y, n
+    html_out = re.sub('css="([^"]*)"', repl, html, flags=re.MULTILINE)
+    style = '\n'.join(
+        decls.replace('&', f'[{name}]')
+        if '&' in decls else
+        f'[{name}] {{ {decls} }}'
+        for decls, name in classes.items()
+    )
+    return head(f'<style>{style}</style>'), html_out
 
 app = Flask(__name__)
 
-def esc(txt: str, __table = str.maketrans({
+def esc(txt: str, __table: dict[int, str] = str.maketrans({
     "<": "&lt;",
     ">": "&gt;",
     "&": "&amp;",
@@ -43,38 +51,34 @@ def esc(txt: str, __table = str.maketrans({
 })) -> str:
     return txt.translate(__table)
 
-from itsdangerous.url_safe import URLSafeSerializer
-import secrets
+__exposed: dict[str, Callable[..., Any]] = dict()
 
-__serializer = URLSafeSerializer(secrets.token_hex(32))
-
-__exposed = dict()
-
-def expose(f, *args, **kws):
+def expose(f: Callable[..., Any], *args: Any, **kws: Any) -> Callable[..., Any]:
     name = f.__name__
     is_lambda = name == '<lambda>'
     if is_lambda:
         # note: memory leak
         name += str(len(__exposed))
     if name in __exposed:
-        assert __exposed[name] == f
-    __exposed[name] = f
-    def inner(*args, **kws):
-        msg = __serializer.dumps((name, *args, kws))
-        return f"'/call/{msg}'"
-    if args or kws or name.startswith('<lambda>'):
-        return inner(*args, **kws)
-    else:
-        return inner
+        assert __exposed[name] == f                  # type: ignore
+    __exposed[name] = f                              #
+    def inner(*args, **kws):                         # type: ignore
+        msg: bytes = __serializer.dumps((name, *args, kws)) # type: ignore
+        return f"'/call/{msg.decode()}'"                      #
+    if args or kws or name.startswith('<lambda>'):   #
+        return inner(*args, **kws)                   # type: ignore
+    else:                                            #
+        inner.call = lambda *a, **ka: f(*a, **ka)    # type: ignore
+        return inner                                 # type: ignore
 
-def serve(f):
+def serve(f: Callable[..., str | Iterable[head | str]]):
 
     @app.route('/call/<msg>', methods=['POST'])
-    def call(msg):
+    def call(msg: str):
         try:
-            name, *args, kws = __serializer.loads(msg)
-            more_args = request.json["args"]
-            ret = __exposed[name](*args, *more_args, **kws)
+            name, *args, kws = __serializer.loads(msg)      # type: ignore
+            more_args = request.json["args"]                # type: ignore
+            ret = __exposed[name](*args, *more_args, **kws) # type: ignore
             if ret is None:
                 return '', 204
             else:
@@ -86,7 +90,7 @@ def serve(f):
 
     @app.route('/hot.js')
     def hot_js():
-        return '''
+        return r'''
             function call(url, ...args) {
                 return fetch(url, {
                     method: 'POST',
@@ -100,6 +104,12 @@ def serve(f):
                     next.nodeType === Node.ELEMENT_NODE &&
                     prev.tagName === next.tagName
                 ) {
+                    if (
+                        (prev.hasAttribute('id') || next.hasAttribute('id')) &&
+                        prev.getAttribute('id') !== next.getAttribute('id')
+                    ) {
+                        prev.replaceWith(next)
+                    }
                     if (next.hasAttribute('replace')) {
                         prev.replaceWith(next)
                         return
@@ -177,7 +187,7 @@ def serve(f):
                         const doc = parser.parseFromString(text, "text/html")
                         morph(document.head, doc.head)
                         morph(document.body, doc.body)
-                        for (let script of document.querySelectorAll('script[eval]')) {
+                        for (const script of document.querySelectorAll('script[eval]')) {
                             const global_eval = eval
                             global_eval(script.textContent)
                         }
@@ -195,6 +205,7 @@ def serve(f):
                     }
                 }
             }
+            window.refresh = refresh
             async function long_poll() {
                 try {
                     while (await fetch('/ping'));
@@ -204,33 +215,40 @@ def serve(f):
             }
             long_poll()
             window.onpopstate = () => refresh()
-            function set_query(q) {
-                if (typeof q === 'string' && q[0] == '#') {
-                    q = document.querySelector(q)
-                }
-                if (q instanceof HTMLFormElement) {
-                    q = new FormData(q)
-                } else if (q && typeof q === 'object') {
-                    const kvs = Object.entries(q)
-                    q = new FormData()
-                    for (let [k, v] of kvs) {
-                        q.append(k, v)
+            function input_values() {
+                const inputs = document.querySelectorAll('input:not([type=radio]),input[type=radio]:checked,select')
+                const vals = {}
+                for (let i of inputs) {
+                    if (!i.name) {
+                        console.error(i, 'has no name attribute')
+                        continue
                     }
-                }
-                if (q instanceof FormData) {
-                    q = '?' + new URLSearchParams(q).toString()
-                }
-                if (typeof q[0] === 'string' && q[0] == '?') {
-                    next = location.href
-                    if (next.indexOf('?') == -1 || !location.search) {
-                        next = next.replace(/\?$/, '') + q
+                    if (i.type == 'radio') {
+                        console.assert(i.checked)
+                        vals[i.name] = i.value
+                    } else if (i.type == 'checkbox') {
+                        vals[i.name] = i.checked
                     } else {
-                        next = next.replace(location.search, q)
+                        vals[i.name] = i.value
                     }
-                    history.replaceState(null, null, next)
-                } else {
-                    console.warn('Not a valid query', q)
                 }
+                return vals
+            }
+            function get_query(q) {
+                return Object.fromEntries(new URLSearchParams(location.search))
+            }
+            function update_query(kvs) {
+                return set_query({...get_query(), ...kvs})
+            }
+            function set_query(kvs) {
+                q = '?' + new URLSearchParams(kvs).toString()
+                next = location.href
+                if (next.indexOf('?') == -1 || !location.search) {
+                    next = next.replace(/\?$/, '') + q
+                } else {
+                    next = next.replace(location.search, q)
+                }
+                history.replaceState(null, null, next)
             }
         '''
 
@@ -258,7 +276,7 @@ def serve(f):
 
     @app.route('/')
     @app.route('/<path:path>')
-    def index(path=None):
+    def index(path: str|None=None):
         parts = []
         try:
             if isinstance(f, str):
@@ -278,13 +296,26 @@ def serve(f):
                head('<title>error</title>'),
                f'<pre>{esc(tb.format_exc())}</pre>'
             ]
-        heads, bodies = partition_heads(parts)
-        if not any(re.search('^\s*<\s*title\b', hd) for hd in heads):
+        if isinstance(parts, str):
+            parts = [parts]
+
+        parts = list(parts)
+        heads = ['''
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+        ''']
+        heads += [part.content for part in parts if isinstance(part, head)]
+        bodies = [part for part in parts if isinstance(part, str)]
+        if not any(hd.lstrip().startswith('<title') for hd in heads):
             heads += [f'<title>{title}</title>']
-        if not any(re.search('^\s*<\s*link\s+rel=.?\bicon\b', hd) for hd in heads):
+        if not any(hd.lstrip().startswith('<link rel="icon"') for hd in heads):
             # <!-- favicon because of chromium bug, see https://stackoverflow.com/a/36104057 -->
             heads += ['<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgo=">']
-        html = dedent('''
+        if bodies and not bodies[0].lstrip().startswith('<body'):
+            bodies = ['<body>', *bodies, '</body>']
+        css_head, body = make_classes('\n'.join(bodies))
+        head_str = '\n'.join([*heads, css_head.content])
+        html = textwrap.dedent('''
             <!doctype html>
             <html lang="en">
             <head>
@@ -292,12 +323,14 @@ def serve(f):
             <script defer src="/hot.js"></script>
             {head}
             </head>
-            <body>
             {body}
-            </body>
             </html>
-        ''').strip().format(head='\n'.join(heads), body='\n'.join(bodies))
-        return gzip.compress(html.encode()), {'Content-Encoding': 'gzip'}
+        ''').strip().format(head=head_str, body=body)
+        if 'gzip' in request.accept_encodings:
+            return gzip.compress(html.encode()), {'Content-Encoding': 'gzip'}
+        else:
+            return html
 
     if sys.argv[0].endswith('.py'):
-        app.run()
+        import os
+        app.run(host=os.environ.get('VIABLE_HOST'))

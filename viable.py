@@ -2,17 +2,16 @@ from __future__ import annotations
 from typing import *
 
 from dataclasses import dataclass
-from flask import Flask, request
-import textwrap
-import gzip
-import inspect
-import re
-import sys
-import time
+import os
 import pickle
-
-from itsdangerous.url_safe import URLSafeSerializer # type: ignore
+import re
 import secrets
+import sys
+import textwrap
+import time
+
+from flask import Flask, request
+from itsdangerous.url_safe import URLSafeSerializer # type: ignore
 
 __serializer = URLSafeSerializer(secrets.token_hex(32), serializer=pickle) # type: ignore
 
@@ -251,7 +250,7 @@ def serve(f: Callable[..., str | Iterable[head | str]]):
                 }
                 history.replaceState(null, null, next)
             }
-        '''
+        ''', {'Content-Type': 'application/javascript'}
 
     @app.route('/traceback.css')
     def traceback_css():
@@ -268,12 +267,12 @@ def serve(f: Callable[..., str | Iterable[head | str]]):
                 white-space: pre-wrap;
                 overflow-wrap: break-word;
             }
-        ''', 200, {'Content-Type': 'text/css'}
+        ''', {'Content-Type': 'text/css'}
 
     @app.route('/ping')
     def ping():
         time.sleep(115)
-        return f'pong\n'
+        return 'pong\n', {'Content-Type': 'text/plain'}
 
     @app.route('/')
     @app.route('/<path:path>')
@@ -327,11 +326,16 @@ def serve(f: Callable[..., str | Iterable[head | str]]):
             {body}
             </html>
         ''').strip().format(head=head_str, body=body)
-        if 'gzip' in request.accept_encodings:
-            return gzip.compress(html.encode()), {'Content-Encoding': 'gzip'}
-        else:
-            return html
+        return html
+
+    try:
+        from flask_compress import Compress # type: ignore
+        Compress(app)
+    except Exception as e:
+        print('Not using flask_compress:', str(e), file=sys.stderr)
 
     if sys.argv[0].endswith('.py'):
-        import os
-        app.run(host=os.environ.get('VIABLE_HOST'), port=os.environ.get('VIABLE_PORT'))
+        host = os.environ.get('VIABLE_HOST')
+        port = os.environ.get('VIABLE_PORT')
+        port = int(port) if port else None
+        app.run(host=host, port=port)

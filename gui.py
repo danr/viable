@@ -20,7 +20,7 @@ server_redraws = 0
 
 @expose
 def example_exposed(*args: str):
-    print(args)
+    print(request.headers['User-Agent'], args)
     global last_msg
     last_msg = ' '.join(args)
 

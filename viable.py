@@ -89,168 +89,8 @@ def serve(f: Callable[..., str | Iterable[head | str]]):
             return '', 400
 
     @app.route('/hot.js')
-    def hot_js():
-        return r'''
-            function call(url, ...args) {
-                return fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ args: args }),
-                })
-            }
-            function morph(prev, next) {
-                if (
-                    prev.nodeType === Node.ELEMENT_NODE &&
-                    next.nodeType === Node.ELEMENT_NODE &&
-                    prev.tagName === next.tagName
-                ) {
-                    if (
-                        (prev.hasAttribute('id') || next.hasAttribute('id')) &&
-                        prev.getAttribute('id') !== next.getAttribute('id')
-                    ) {
-                        prev.replaceWith(next)
-                    }
-                    if (next.hasAttribute('replace')) {
-                        prev.replaceWith(next)
-                        return
-                    }
-                    if (
-                        next.hasAttribute('protect')
-                        // && prev.id === next.id ?
-                    ) {
-                        return
-                    }
-                    for (let name of prev.getAttributeNames()) {
-                        if (!next.hasAttribute(name)) {
-                            prev.removeAttribute(name)
-                        }
-                    }
-                    for (let name of next.getAttributeNames()) {
-                        if (
-                            !prev.hasAttribute(name) ||
-                            next.getAttribute(name) !== prev.getAttribute(name)
-                        ) {
-                            prev.setAttribute(name, next.getAttribute(name))
-                        }
-                    }
-                    if (prev.tagName === 'INPUT' && document.activeElement !== prev) {
-                        prev.value = next.getAttribute('value')
-                        prev.checked = next.hasAttribute('checked')
-                    }
-                    const pc = [...prev.childNodes]
-                    const nc = [...next.childNodes]
-                    const num_max = Math.max(pc.length, nc.length)
-                    for (let i = 0; i < num_max; ++i) {
-                        if (i >= nc.length) {
-                            prev.removeChild(pc[i])
-                        } else if (i >= pc.length) {
-                            prev.appendChild(nc[i])
-                        } else {
-                            morph(pc[i], nc[i])
-                        }
-                    }
-                } else if (
-                    prev.nodeType === Node.TEXT_NODE &&
-                    next.nodeType === Node.TEXT_NODE
-                ) {
-                    if (prev.textContent !== next.textContent) {
-                        prev.textContent = next.textContent
-                    }
-                } else {
-                    prev.replaceWith(next)
-                }
-            }
-            let in_progress = false
-            let rejected = false
-            async function refresh(i=0, and_then) {
-                if (!and_then) {
-                    if (in_progress) {
-                        rejected = true
-                        return
-                    }
-                    in_progress = true
-                }
-                let text = null
-                try {
-                    const resp = await fetch(window.location.href)
-                    text = await resp.text()
-                } catch (e) {
-                    if (i > 0) {
-                        window.setTimeout(() => refresh(i-1, and_then), i < 300 ? 1000 : 16)
-                    } else {
-                        console.warn('timeout', e)
-                    }
-                }
-                if (text !== null) {
-                    try {
-                        const parser = new DOMParser()
-                        const doc = parser.parseFromString(text, "text/html")
-                        morph(document.head, doc.head)
-                        morph(document.body, doc.body)
-                        for (const script of document.querySelectorAll('script[eval]')) {
-                            const global_eval = eval
-                            global_eval(script.textContent)
-                        }
-                    } catch(e) {
-                        console.warn(e)
-                    }
-                    if (and_then) {
-                        and_then()
-                    } else if (in_progress) {
-                        in_progress = false
-                        if (rejected) {
-                            rejected = false
-                            refresh()
-                        }
-                    }
-                }
-            }
-            window.refresh = refresh
-            async function long_poll() {
-                try {
-                    while (await fetch('/ping'));
-                } catch (e) {
-                    refresh(600, long_poll)
-                }
-            }
-            long_poll()
-            window.onpopstate = () => refresh()
-            function input_values() {
-                const inputs = document.querySelectorAll('input:not([type=radio]),input[type=radio]:checked,select')
-                const vals = {}
-                for (let i of inputs) {
-                    if (!i.name) {
-                        console.error(i, 'has no name attribute')
-                        continue
-                    }
-                    if (i.type == 'radio') {
-                        console.assert(i.checked)
-                        vals[i.name] = i.value
-                    } else if (i.type == 'checkbox') {
-                        vals[i.name] = i.checked
-                    } else {
-                        vals[i.name] = i.value
-                    }
-                }
-                return vals
-            }
-            function get_query(q) {
-                return Object.fromEntries(new URLSearchParams(location.search))
-            }
-            function update_query(kvs) {
-                return set_query({...get_query(), ...kvs})
-            }
-            function set_query(kvs) {
-                q = '?' + new URLSearchParams(kvs).toString()
-                next = location.href
-                if (next.indexOf('?') == -1 || !location.search) {
-                    next = next.replace(/\?$/, '') + q
-                } else {
-                    next = next.replace(location.search, q)
-                }
-                history.replaceState(null, null, next)
-            }
-        ''', {'Content-Type': 'application/javascript'}
+    def hot_js_route():
+        return hot_js, {'Content-Type': 'application/javascript'}
 
     @app.route('/traceback.css')
     def traceback_css():
@@ -339,3 +179,166 @@ def serve(f: Callable[..., str | Iterable[head | str]]):
         port = os.environ.get('VIABLE_PORT')
         port = int(port) if port else None
         app.run(host=host, port=port)
+
+hot_js = r'''
+    function call(url, ...args) {
+        return fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ args: args }),
+        })
+    }
+    function morph(prev, next) {
+        if (
+            prev.nodeType === Node.ELEMENT_NODE &&
+            next.nodeType === Node.ELEMENT_NODE &&
+            prev.tagName === next.tagName
+        ) {
+            if (
+                (prev.hasAttribute('id') || next.hasAttribute('id')) &&
+                prev.getAttribute('id') !== next.getAttribute('id')
+            ) {
+                prev.replaceWith(next)
+            }
+            if (next.hasAttribute('replace')) {
+                prev.replaceWith(next)
+                return
+            }
+            if (
+                next.hasAttribute('protect')
+                // && prev.id === next.id ?
+            ) {
+                return
+            }
+            for (let name of prev.getAttributeNames()) {
+                if (!next.hasAttribute(name)) {
+                    prev.removeAttribute(name)
+                }
+            }
+            for (let name of next.getAttributeNames()) {
+                if (
+                    !prev.hasAttribute(name) ||
+                    next.getAttribute(name) !== prev.getAttribute(name)
+                ) {
+                    prev.setAttribute(name, next.getAttribute(name))
+                }
+            }
+            if (prev.tagName === 'INPUT' && document.activeElement !== prev) {
+                prev.value = next.getAttribute('value')
+                prev.checked = next.hasAttribute('checked')
+            }
+            const pc = [...prev.childNodes]
+            const nc = [...next.childNodes]
+            const num_max = Math.max(pc.length, nc.length)
+            for (let i = 0; i < num_max; ++i) {
+                if (i >= nc.length) {
+                    prev.removeChild(pc[i])
+                } else if (i >= pc.length) {
+                    prev.appendChild(nc[i])
+                } else {
+                    morph(pc[i], nc[i])
+                }
+            }
+        } else if (
+            prev.nodeType === Node.TEXT_NODE &&
+            next.nodeType === Node.TEXT_NODE
+        ) {
+            if (prev.textContent !== next.textContent) {
+                prev.textContent = next.textContent
+            }
+        } else {
+            prev.replaceWith(next)
+        }
+    }
+    let in_progress = false
+    let rejected = false
+    async function refresh(i=0, and_then) {
+        if (!and_then) {
+            if (in_progress) {
+                rejected = true
+                return
+            }
+            in_progress = true
+        }
+        let text = null
+        try {
+            const resp = await fetch(window.location.href)
+            text = await resp.text()
+        } catch (e) {
+            if (i > 0) {
+                window.setTimeout(() => refresh(i-1, and_then), i < 300 ? 1000 : 16)
+            } else {
+                console.warn('timeout', e)
+            }
+        }
+        if (text !== null) {
+            try {
+                const parser = new DOMParser()
+                const doc = parser.parseFromString(text, "text/html")
+                morph(document.head, doc.head)
+                morph(document.body, doc.body)
+                for (const script of document.querySelectorAll('script[eval]')) {
+                    const global_eval = eval
+                    global_eval(script.textContent)
+                }
+            } catch(e) {
+                console.warn(e)
+            }
+            if (and_then) {
+                and_then()
+            } else if (in_progress) {
+                in_progress = false
+                if (rejected) {
+                    rejected = false
+                    refresh()
+                }
+            }
+        }
+    }
+    async function long_poll() {
+        try {
+            while (await fetch('/ping'));
+        } catch (e) {
+            refresh(600, long_poll)
+        }
+    }
+    long_poll()
+    window.onpopstate = () => refresh()
+    function input_values() {
+        const inputs = document.querySelectorAll('input:not([type=radio]),input[type=radio]:checked,select')
+        const vals = {}
+        for (let i of inputs) {
+            if (!i.name) {
+                console.error(i, 'has no name attribute')
+                continue
+            }
+            if (i.type == 'radio') {
+                console.assert(i.checked)
+                vals[i.name] = i.value
+            } else if (i.type == 'checkbox') {
+                vals[i.name] = i.checked
+            } else {
+                vals[i.name] = i.value
+            }
+        }
+        return vals
+    }
+    function get_query(q) {
+        return Object.fromEntries(new URLSearchParams(location.search))
+    }
+    function update_query(kvs) {
+        return set_query({...get_query(), ...kvs})
+    }
+    function set_query(kvs) {
+        q = '?' + new URLSearchParams(kvs).toString()
+        next = location.href
+        if (next.indexOf('?') == -1 || !location.search) {
+            next = next.replace(/\?$/, '') + q
+        } else {
+            next = next.replace(location.search, q)
+        }
+        history.replaceState(null, null, next)
+    }
+'''
+
+hot_js = re.sub(' {2,}', '', hot_js.strip())

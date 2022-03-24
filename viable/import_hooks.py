@@ -1,10 +1,22 @@
-import sys
+from importlib.abc import PathEntryFinder, Loader, MetaPathFinder
+from importlib.machinery import ModuleSpec
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import ModuleSpec
 from types import ModuleType
 from typing import Sequence, Any
 
-level = 0
+from types import ModuleType
+from typing import Callable, Any
+
+import sys
+
+import importlib
+import builtins
+
+from types import ModuleType
+from collections import UserDict
+
+stack: list[set[str]] = []
 
 def AddTrackingToSpec(spec: ModuleSpec):
     if spec.loader:
@@ -16,14 +28,20 @@ def AddTrackingToSpec(spec: ModuleSpec):
         def exec_module(self, module: ModuleType) -> None:
             if '(built-in)' in repr(module) or 'python3.' in repr(module):
                 return spec_loader.exec_module(module)
-            global level
-            level += 1
+            name = module.__name__
+            refs: set[str] = set()
+            for s in stack:
+                s.add(name)
+            stack.append(refs)
+            level = len(stack)
             print('  ' * level + 'start', module)
             try:
                 out = spec_loader.exec_module(module)
             finally:
-                print('  ' * level + 'end  ', module)
-                level -= 1
+                if name in refs:
+                    refs.remove(name)
+                print('  ' * level + 'end  ', module, refs)
+                stack.pop()
             return out
 
         def create_module(self, spec: ModuleSpec):
@@ -53,14 +71,13 @@ class TrackingMetaPathFinder(MetaPathFinder):
                 return spec
         return None
 
-from types import ModuleType
-from collections import UserDict
 
 class TrackingDict(UserDict[str, ModuleType]):
     def __getitem__(self, k: str):
-        print('  ' * level + '  get', k)
+        for s in stack:
+            s.add(k)
         return self.data[k]
 
 def install():
-    # sys.meta_path.insert(0, TrackingMetaPathFinder())
+    sys.meta_path.insert(0, TrackingMetaPathFinder())
     sys.modules = TrackingDict(sys.modules)

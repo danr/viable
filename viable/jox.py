@@ -1,4 +1,4 @@
 
-from .jax import jax
+import jax
 
-jox = 1
+jox = jax.jax

@@ -1,2 +1,3 @@
 
-jax = 5
+def jax(i: int):
+    return i + 1

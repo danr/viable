@@ -13,9 +13,8 @@ from .core import (
 
 from . import import_hooks
 import_hooks.install()
-from . import unused
-unused.install_import_hook()
-# unused.install_path_hook()
+# from . import unused
+# unused.install()
 
 def queue_refresh(after_ms: float=100):
     js = minify(f'''

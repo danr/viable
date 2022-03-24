@@ -7,7 +7,8 @@ import viable as V
 
 from pprint import pformat
 
-from .jox import jox
+from . import jox
+from . import jix
 
 serve.suppress_flask_logging()
 

@@ -5,9 +5,14 @@ from flask import request
 from viable import serve, esc, div, pre, Node, js
 import viable as V
 
-from pprint import pformat
+from pprint import pformat, pprint
 
-from .jox import jox
+from jox import jox
+from jix import jix
+
+# import sys
+
+# pprint(sys.path_importer_cache)
 
 serve.suppress_flask_logging()
 

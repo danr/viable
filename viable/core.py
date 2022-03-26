@@ -305,6 +305,11 @@ class Serve:
         return resp
 
     def run(self, host: str | None = None, port: int | None = None):
+
+        import viable.import_hooks as ih
+        from pprint import pprint
+        pprint(ih.tracked)
+
         try:
             from flask_compress import Compress # type: ignore
             Compress(app)

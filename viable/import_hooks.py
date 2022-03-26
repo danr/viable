@@ -1,22 +1,71 @@
-from importlib.abc import PathEntryFinder, Loader, MetaPathFinder
-from importlib.machinery import ModuleSpec
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import ModuleSpec
 from types import ModuleType
-from typing import Sequence, Any
-
-from types import ModuleType
-from typing import Callable, Any
-
+from typing import Sequence, Any, TypeAlias, Literal, Callable
+from collections import UserDict
+from dataclasses import dataclass, field
+from pprint import pprint
+import builtins
 import sys
 
-import importlib
-import builtins
+ordset: TypeAlias = dict[str, Literal[True]]
 
-from types import ModuleType
-from collections import UserDict
+@dataclass(frozen=True)
+class StackedModule:
+    name: str
+    deps: ordset = field(default_factory=dict)
 
-stack: list[set[str]] = []
+stack: list[StackedModule] = [StackedModule('__main__')]
+
+@dataclass(frozen=True)
+class TrackedModule:
+    module: ModuleType
+    deps: list[str]
+
+    @property
+    def name(self):
+        return self.module.__name__
+
+tracked: dict[str, TrackedModule] = {}
+
+def boring(module: ModuleType):
+    # if 'built-in' in repr(module):
+    #     print(module.__spec__.name, module.__spec__.origin)
+    return '(built-in)' in repr(module) or 'python3.' in repr(module)
+
+from contextlib import contextmanager
+
+@contextmanager
+def track(name: str, origin: str):
+    if stack[-1].name == name:
+        yield
+    elif not name:
+        yield
+    elif (module := sys.modules.get(name)) and boring(module):
+        yield
+    else:
+        m = StackedModule(name)
+        deps = m.deps
+        print('  ' * len(stack) + 'begin', name, f'(origin: {origin})')
+        stack.append(m)
+        try:
+            yield
+        finally:
+            if name in sys.modules:
+                module = sys.modules[name]
+                if not boring(module):
+                    for s in stack:
+                        s.deps[name] = True
+                    for k, v in module.__dict__.items():
+                        if isinstance(v, ModuleType) and not boring(v):
+                            print('  ' * len(stack) + 'read ', v.__name__, f'(as {k})')
+                            deps[v.__name__] = True
+                    if name in deps:
+                        del deps[name]
+                    t = TrackedModule(module, list(deps.keys()))
+                    tracked[t.name] = t
+            stack.pop()
+            print('  ' * len(stack) + 'end  ', name)
 
 def AddTrackingToSpec(spec: ModuleSpec):
     if spec.loader:
@@ -26,23 +75,11 @@ def AddTrackingToSpec(spec: ModuleSpec):
 
     class TrackingLoader(Loader):
         def exec_module(self, module: ModuleType) -> None:
-            if '(built-in)' in repr(module) or 'python3.' in repr(module):
+            if boring(module):
                 return spec_loader.exec_module(module)
             name = module.__name__
-            refs: set[str] = set()
-            for s in stack:
-                s.add(name)
-            stack.append(refs)
-            level = len(stack)
-            print('  ' * level + 'start', module)
-            try:
-                out = spec_loader.exec_module(module)
-            finally:
-                if name in refs:
-                    refs.remove(name)
-                print('  ' * level + 'end  ', module, refs)
-                stack.pop()
-            return out
+            with track(name, 'exec_module'):
+                return spec_loader.exec_module(module)
 
         def create_module(self, spec: ModuleSpec):
             return spec_loader.create_module(spec)
@@ -50,7 +87,8 @@ def AddTrackingToSpec(spec: ModuleSpec):
         def load_module(self, fullname: str):
             return spec_loader.load_module(fullname)
 
-        def module_repr(self, module: ModuleType): return spec_loader.module_repr(module)
+        def module_repr(self, module: ModuleType):
+            return spec_loader.module_repr(module)
 
     spec.loader = TrackingLoader()
     return spec
@@ -71,13 +109,27 @@ class TrackingMetaPathFinder(MetaPathFinder):
                 return spec
         return None
 
-
 class TrackingDict(UserDict[str, ModuleType]):
     def __getitem__(self, k: str):
-        for s in stack:
-            s.add(k)
+        module = self.data[k]
+        if not boring(module):
+            print('  ' * len(stack) + 'query', k)
+            for s in stack:
+                s.deps[k] = True
+            main = TrackedModule(self.data['__main__'], list(stack[0].deps.keys()))
+            tracked[main.name] = main
+            # pprint(main)
         return self.data[k]
+
+def track_import(f: Callable[..., Any]):
+    def inner(*args: Any, **kws: Any):
+        name = args[0]
+        with track(name, '__import__'):
+            return f(*args, **kws)
+    return inner
 
 def install():
     sys.meta_path.insert(0, TrackingMetaPathFinder())
     sys.modules = TrackingDict(sys.modules)
+    # meta_path seems to be enough, but this might be needed in some case (?):
+    # builtins.__import__ = track_import(builtins.__import__)

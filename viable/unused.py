@@ -35,43 +35,6 @@ def TrackingPathEntryFinder(name: str) -> PathEntryFinder:
             continue
     raise ImportError
 
-def repr_modules(*names: str):
-    out: list[str] = []
-    for name in names:
-        if '_' in name:
-            continue
-        if m := sys.modules.get(name):
-            # if '(built-in)' in repr(m):
-            #     continue
-            # if 'python3.' in repr(m):
-            #     continue
-            out += [name]
-    return out
-
-stack: list[set[str]] = []
-
-def track_import(f: Callable[..., Any]):
-    def inner(*args: Any, **kws: Any):
-        global level
-        name = args[0]
-        refs: set[str] = set()
-        for s in stack:
-            s.add(name)
-        stack.append(refs)
-        res = f(*args, **kws)
-        if name in refs:
-            refs.remove(name)
-        try:
-            [me] = repr_modules(name)
-            print(me, repr_modules(*refs))
-        except:
-            pass
-        stack.pop()
-        return res
-    return inner
-
 def install():
-    builtins.__import__ = track_import(builtins.__import__)
-    importlib.__import__ = track_import(importlib.__import__)
     sys.path_hooks.insert(0, TrackingPathEntryFinder)
 

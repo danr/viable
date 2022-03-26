@@ -15,6 +15,9 @@ serve.suppress_flask_logging()
 from datetime import datetime
 server_start = datetime.now()
 
+# import sys
+# print(sys.meta_path)
+
 last_msg = ''
 server_redraws = 0
 

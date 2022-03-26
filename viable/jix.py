@@ -1,4 +1,4 @@
 
-import jax
+from . import jax
 
-jix = jax.jax
+val = jax

@@ -3,6 +3,7 @@ from typing import *
 
 from flask import request
 from viable import serve, esc, div, pre, Node, js, watch
+from viable.import_hooks import watcher
 import viable as V
 
 from pprint import pformat, pprint
@@ -10,21 +11,22 @@ from pprint import pformat, pprint
 from jox import jox
 from jix import jix
 
+print(jox(1))
+
 watch()
-
-# import sys
-
-# pprint(sys.path_importer_cache)
 
 serve.suppress_flask_logging()
 
 from datetime import datetime
-server_start = datetime.now()
 
-last_msg = ''
-server_redraws = 0
+try:
+    server_redraws += 1
+except NameError:
+    server_start = datetime.now()
+    last_msg = ''
+    server_redraws = 0
 
-# @serve.expose
+@serve.expose
 def example_exposed(*args: str):
     print(args)
     global last_msg
@@ -46,7 +48,7 @@ def input(store: dict[str, str | bool], name: str, type: str, value: str | None 
     else:
         return f'input {type=} {name=} value="{esc(str(state))}"'
 
-# @serve.one('/')
+@serve.one('/')
 def index() -> Iterator[Node | dict[str, str] | str]:
     global server_redraws
     server_redraws += 1
@@ -111,6 +113,8 @@ def index() -> Iterator[Node | dict[str, str] | str]:
     if store['autoreload']:
         yield V.queue_refresh()
 
+    reloads = watcher.module_reload_counts
+
     scope = {**locals(), **globals()}
     scope = {
         k: v
@@ -120,7 +124,10 @@ def index() -> Iterator[Node | dict[str, str] | str]:
             last_msg
             server_age
             server_redraws
+            reloads
         """.split()
     }
     yield pre(pformat(scope, width=40), user_select="text")
+
+    yield pre(str(jox(1)), user_select="text")
 

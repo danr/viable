@@ -49,7 +49,16 @@ class Watcher:
     inotify: INotify = field(default_factory=INotify)
     module_wd: dict[int, str] = field(default_factory=dict) # watch descriptor to module name
     reinstalls: int = 0
+    module_reload_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     q: Queue[str] = field(default_factory=Queue[str])
+
+    def print(self, *xs: Any):
+        if 0:
+            print(*xs)
+
+    def pp(self, x: Any):
+        if 0:
+            pp(x)
 
     def watch(self):
         if self.is_watching:
@@ -66,22 +75,22 @@ class Watcher:
                 mask = flags.MODIFY | flags.CLOSE_WRITE
                 wd = self.inotify.add_watch(v.module.__file__, mask)
                 self.module_wd[wd] = k
-            # pp({'tracked': tracked})
-            print('reinstalls:', self.reinstalls)
-            print('watching:', self.module_wd)
+            self.pp({'tracked': tracked})
+            self.print('reinstalls:', self.reinstalls)
+            self.print('watching:', self.module_wd)
             self.reinstalls += 1
 
     def read(self):
         while True:
             for event in self.inotify.read():
-                print(self.module_wd[event.wd], '::', *[str(m) for m in flags.from_mask(event.mask)])
+                self.print(self.module_wd[event.wd], '::', *[str(m) for m in flags.from_mask(event.mask)])
                 self.q.put_nowait(self.module_wd[event.wd])
 
     def reloader(self):
         while True:
-            print('reloader: reinstall')
+            self.print('reloader: reinstall')
             self.reinstall()
-            print('reloader: waiting...\n')
+            self.print('reloader: waiting...\n')
             needs_reload: set[str] = {self.q.get()}
             with lock:
                 try:
@@ -93,17 +102,17 @@ class Watcher:
                 for k, t in tracked.items():
                     for d in t.deps:
                         rev_deps[d].append(k)
-                # pp({'rev_deps': rev_deps})
+                self.pp({'rev_deps': rev_deps})
                 def dfs(s: str, visited: set[str]) -> set[str]:
                     if s not in visited:
                         visited.add(s)
                         for k in rev_deps[s]:
                             dfs(k, visited)
                     return visited
-                print(f'{needs_reload = }')
+                self.print(f'{needs_reload = }')
                 for s in list(needs_reload):
                     needs_reload |= dfs(s, set())
-                print(f'{needs_reload = }')
+                self.print(f'{needs_reload = }')
                 roots = [
                     name
                     for name in needs_reload
@@ -122,13 +131,17 @@ class Watcher:
                 order: list[str] = []
                 for root in roots:
                     inside_out(root, order)
-                print(f'{roots = }')
-                print(f'{order = }')
+                self.print(f'{roots = }')
+                self.print(f'{order = }')
                 modules = [ tracked[name].module for name in order ]
             for m in modules:
-                # print('begin reimporting', m.__name__)
+                # self.print('begin reimporting', m.__name__)
+                self.module_reload_counts[m.__name__] += 1
                 importlib.reload(m)
-                # print('  end reimporting', m.__name__)
+                # self.print('  end reimporting', m.__name__)
+
+    def module_reload_count(self, m: str):
+        return self.module_reload_counts[m]
 
 watcher = Watcher()
 watch = watcher.watch

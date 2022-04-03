@@ -13,10 +13,13 @@ from . import jix
 serve.suppress_flask_logging()
 
 from datetime import datetime
-server_start = datetime.now()
 
-last_msg = ''
-server_redraws = 0
+try:
+    server_redraws += 1
+except NameError:
+    server_start = datetime.now()
+    last_msg = ''
+    server_redraws = 0
 
 @serve.expose
 def example_exposed(*args: str):

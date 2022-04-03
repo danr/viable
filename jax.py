@@ -2,4 +2,4 @@
 import leaf
 
 def jax(i: int):
-    return i + 1
+    return leaf.x + i - 1

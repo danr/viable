@@ -41,106 +41,99 @@ from inotify_simple import INotify, flags
 from threading import Thread
 from queue import Queue, Empty
 import importlib
+from collections import defaultdict
 
-is_watching = False
+@dataclass
+class Watcher:
+    is_watching = False
+    inotify: INotify = field(default_factory=INotify)
+    module_wd: dict[int, str] = field(default_factory=dict) # watch descriptor to module name
+    reinstalls: int = 0
+    q: Queue[str] = field(default_factory=Queue[str])
 
-def watch():
-    global is_watching
+    def watch(self):
+        if self.is_watching:
+            return
+        else:
+            self.is_watching = True
 
-    if is_watching:
-        return
-    else:
-        is_watching = True
+        Thread(target=self.read, daemon=False).start()
+        Thread(target=self.reloader, daemon=False).start()
 
-    inotify = INotify()
-
-    rev: dict[int, str] = {} # watch descriptor to module name
-
-    reinstalls = 0
-
-    def reinstall():
-        nonlocal reinstalls
+    def reinstall(self):
         with lock:
             for k, v in tracked.items():
                 mask = flags.MODIFY | flags.CLOSE_WRITE
-                wd = inotify.add_watch(v.module.__file__, mask)
-                rev[wd] = k
-            pp(tracked)
-            reinstalls += 1
-            print('reinstalls:', reinstalls)
-            print('watching:', rev)
+                wd = self.inotify.add_watch(v.module.__file__, mask)
+                self.module_wd[wd] = k
+            # pp({'tracked': tracked})
+            print('reinstalls:', self.reinstalls)
+            print('watching:', self.module_wd)
+            self.reinstalls += 1
 
-    q = Queue[str]()
-
-    def read():
+    def read(self):
         while True:
-            for event in inotify.read():
-                print(rev[event.wd], '::', *[str(m) for m in flags.from_mask(event.mask)])
-                q.put_nowait(rev[event.wd])
+            for event in self.inotify.read():
+                print(self.module_wd[event.wd], '::', *[str(m) for m in flags.from_mask(event.mask)])
+                self.q.put_nowait(self.module_wd[event.wd])
 
-    def reloader():
-        needs_reload: set[str] = set()
+    def reloader(self):
         while True:
             print('reloader: reinstall')
-            reinstall()
-            print('reloader: waiting')
-            needs_reload = {q.get()}
+            self.reinstall()
+            print('reloader: waiting...\n')
+            needs_reload: set[str] = {self.q.get()}
             with lock:
                 try:
                     while True:
-                        needs_reload.add(q.get(timeout=0.001))
+                        needs_reload.add(self.q.get(timeout=0.001))
                 except Empty:
                     pass
-                from collections import defaultdict
-                rdeps = defaultdict[str, list[str]](list)
+                rev_deps = defaultdict[str, list[str]](list)
                 for k, t in tracked.items():
                     for d in t.deps:
-                        rdeps[d].append(k)
-                pp(rdeps)
-                def dfs(s: str, v: set[str]):
-                    if s in v:
-                        return
-                    else:
-                        v.add(s)
-                    needs_reload.add(s)
-                    for k in rdeps[s]:
-                        dfs(k, v)
+                        rev_deps[d].append(k)
+                # pp({'rev_deps': rev_deps})
+                def dfs(s: str, visited: set[str]) -> set[str]:
+                    if s not in visited:
+                        visited.add(s)
+                        for k in rev_deps[s]:
+                            dfs(k, visited)
+                    return visited
                 print(f'{needs_reload = }')
                 for s in list(needs_reload):
-                    dfs(s, set())
+                    needs_reload |= dfs(s, set())
                 print(f'{needs_reload = }')
                 roots = [
                     name
                     for name in needs_reload
                     if all(name not in t.deps for _, t in tracked.items())
                 ]
-                order: list[str] = []
-                def inside_out(k: str, v: list[str]):
+                def inside_out(k: str, order: list[str]):
                     if k not in needs_reload:
                         return
                     t = tracked[k]
                     for d in t.deps:
-                        inside_out(d, v)
-                    if k in v:
+                        inside_out(d, order)
+                    if k in order:
                         return
                     else:
-                        v += [k]
+                        order += [k]
+                order: list[str] = []
                 for root in roots:
                     inside_out(root, order)
                 print(f'{roots = }')
                 print(f'{order = }')
                 modules = [ tracked[name].module for name in order ]
             for m in modules:
-                print('begin reimporting', m.__name__)
+                # print('begin reimporting', m.__name__)
                 importlib.reload(m)
-                print('  end reimporting', m.__name__)
+                # print('  end reimporting', m.__name__)
 
-    Thread(target=read, daemon=False).start()
-    Thread(target=reloader, daemon=False).start()
+watcher = Watcher()
+watch = watcher.watch
 
 def boring(module: ModuleType):
-    # if 'built-in' in repr(module):
-    #     print(module.__spec__.name, module.__spec__.origin)
     if '(built-in)' in repr(module):
         return True
     if 'python3.' in repr(module):
@@ -148,6 +141,10 @@ def boring(module: ModuleType):
     if 'viable/__init__.py' in repr(module):
         return True
     return False
+
+def track_debug(action: str, *xs: Any):
+    if 0:
+        print('  ' * len(stack) + action.rjust(5, ' '), *xs)
 
 @contextmanager
 def track(name: str, origin: str):
@@ -160,7 +157,7 @@ def track(name: str, origin: str):
     else:
         m = StackedModule(name)
         deps = m.deps
-        print('  ' * len(stack) + 'begin', name, f'(origin: {origin})')
+        track_debug('begin', name, f'(origin: {origin})')
         with lock:
             stack.append(m)
         try:
@@ -174,14 +171,14 @@ def track(name: str, origin: str):
                             s.deps[name] = True
                         for k, v in module.__dict__.items():
                             if isinstance(v, ModuleType) and not boring(v):
-                                print('  ' * len(stack) + 'read ', v.__name__, f'(as {k})')
+                                track_debug('read', v.__name__, f'(as {k})')
                                 deps[v.__name__] = True
                         if name in deps:
                             del deps[name]
                         t = TrackedModule(module, list(deps.keys()))
                         tracked[t.name] = t
                 stack.pop()
-            print('  ' * len(stack) + 'end  ', name)
+            track_debug('end', name)
 
 def AddTrackingToSpec(spec: ModuleSpec):
     if spec.loader:
@@ -230,7 +227,7 @@ class TrackingDict(UserDict[str, ModuleType]):
         module = self.data[k]
         if not boring(module):
             with lock:
-                # print('  ' * len(stack) + 'query', k)
+                track_debug('query', k)
                 for s in stack:
                     if k != s.name:
                         s.deps[k] = True

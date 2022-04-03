@@ -20,11 +20,11 @@ serve.suppress_flask_logging()
 from datetime import datetime
 
 try:
-    server_redraws += 1
+    request_count
 except NameError:
+    request_count = 0
     server_start = datetime.now()
     last_msg = ''
-    server_redraws = 0
 
 @serve.expose
 def example_exposed(*args: str):
@@ -50,8 +50,8 @@ def input(store: dict[str, str | bool], name: str, type: str, value: str | None 
 
 @serve.one('/')
 def index() -> Iterator[Node | dict[str, str] | str]:
-    global server_redraws
-    server_redraws += 1
+    global request_count
+    request_count += 1
 
     server_age = round((datetime.now() - server_start).total_seconds())
 
@@ -113,7 +113,7 @@ def index() -> Iterator[Node | dict[str, str] | str]:
     if store['autoreload']:
         yield V.queue_refresh()
 
-    reloads = watcher.module_reload_counts
+    reloads = dict(watcher.module_reload_counts)
 
     scope = {**locals(), **globals()}
     scope = {
@@ -123,11 +123,11 @@ def index() -> Iterator[Node | dict[str, str] | str]:
             store
             last_msg
             server_age
-            server_redraws
+            request_count
             reloads
         """.split()
     }
-    yield pre(pformat(scope, width=40), user_select="text")
+    yield pre(pformat(scope, width=40, sort_dicts=False), user_select="text")
 
     yield pre(str(jox(1)), user_select="text")
 

@@ -11,5 +11,11 @@ pip install --editable .
 ### Example
 
 ```
-ls **/*py | entr -rc viable-example
+ls viable/*py | entr -rc python -m example
+```
+
+Or just
+
+```
+python -m example
 ```

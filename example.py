@@ -2,13 +2,15 @@ from __future__ import annotations
 from typing import *
 
 from flask import request
-from viable import serve, esc, div, pre, Node, js
+from viable import serve, esc, div, pre, Node, js, watch
 import viable as V
 
 from pprint import pformat, pprint
 
 from jox import jox
 from jix import jix
+
+watch()
 
 # import sys
 
@@ -22,7 +24,7 @@ server_start = datetime.now()
 last_msg = ''
 server_redraws = 0
 
-@serve.expose
+# @serve.expose
 def example_exposed(*args: str):
     print(args)
     global last_msg
@@ -44,7 +46,7 @@ def input(store: dict[str, str | bool], name: str, type: str, value: str | None 
     else:
         return f'input {type=} {name=} value="{esc(str(state))}"'
 
-@serve.one('/')
+# @serve.one('/')
 def index() -> Iterator[Node | dict[str, str] | str]:
     global server_redraws
     server_redraws += 1
@@ -121,3 +123,4 @@ def index() -> Iterator[Node | dict[str, str] | str]:
         """.split()
     }
     yield pre(pformat(scope, width=40), user_select="text")
+

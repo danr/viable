@@ -11,6 +11,7 @@ from .core import (
     serve,   # type: ignore
 )
 
+from .import_hooks import watch
 from . import import_hooks
 import_hooks.install()
 # from . import unused

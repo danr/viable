@@ -18,12 +18,13 @@ from itsdangerous import Serializer, URLSafeSerializer
 
 from .tags import *
 
+def is_true(x: str | bool | int):
+    return str(x).lower() in 'true y yes 1'.split()
+
 def get_viable_js():
     from .viable_js import viable_js
     res = viable_js
-    if os.environ.get('VIABLE_NO_HOT'):
-        pass
-    else:
+    if is_true(os.environ.get('VIABLE_HOT', 'true')):
         res += 'poll()'
     res = minify(res)
     return res
@@ -316,7 +317,7 @@ class Serve:
         except Exception as e:
             print('Not using flask_compress:', str(e), file=sys.stderr)
 
-        if os.environ.get('VIABLE_RUN', 'true').lower() == 'true':
+        if is_true(os.environ.get('VIABLE_RUN', 'true')):
             print('Running app...')
             HOST = os.environ.get('VIABLE_HOST', host)
             PORT = os.environ.get('VIABLE_PORT', port)

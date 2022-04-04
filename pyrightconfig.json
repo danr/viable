@@ -3,7 +3,7 @@
     "pythonPlatform": "Linux",
     "typeCheckingMode": "strict",
     "useLibraryCodeForTypes": true,
-    "reportWildcardImportFromLibrary": "none",
+    "reportWildcardImportFromLibrary": "warning",
     "reportMissingTypeStubs": "warning",
     "reportUnusedImport": "warning",
     "reportUnusedVariable": "warning",

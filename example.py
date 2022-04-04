@@ -48,7 +48,7 @@ def input(store: dict[str, str | bool], name: str, type: str, value: str | None 
     else:
         return f'input {type=} {name=} value="{esc(str(state))}"'
 
-@serve.one('/')
+@serve.route('/')
 def index() -> Iterator[Node | dict[str, str] | str]:
     global request_count
     request_count += 1
@@ -129,5 +129,15 @@ def index() -> Iterator[Node | dict[str, str] | str]:
     }
     yield pre(pformat(scope, width=40, sort_dicts=False), user_select="text")
 
-    yield pre(str(jox(1)), user_select="text")
+    yield pre(
+        f'{jox(0)=}',
+        user_select="text",
+        position='relative',
+        width  = 188,
+        height = 86,
+        left   = 64,
+        top    = 25,
+        border='1px #ccc solid',
+    )
 
+serve.run()

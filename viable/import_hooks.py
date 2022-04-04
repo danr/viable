@@ -37,7 +37,7 @@ class TrackedModule:
 lock: RLock = RLock()
 tracked: dict[str, TrackedModule] = {}
 
-from inotify_simple import INotify, flags
+from inotify_simple import INotify, flags, masks
 from threading import Thread
 from queue import Queue, Empty
 import importlib
@@ -72,7 +72,7 @@ class Watcher:
     def reinstall(self):
         with lock:
             for k, v in tracked.items():
-                mask = flags.MODIFY | flags.CLOSE_WRITE
+                mask = flags.CLOSE_WRITE | flags.MODIFY
                 wd = self.inotify.add_watch(v.module.__file__, mask)
                 self.module_wd[wd] = k
             self.pp({'tracked': tracked})
@@ -91,13 +91,15 @@ class Watcher:
             self.print('reloader: reinstall')
             self.reinstall()
             self.print('reloader: waiting...\n')
-            needs_reload: set[str] = {self.q.get()}
+            needs_reload_list: list[str] = [self.q.get()]
             with lock:
                 try:
                     while True:
-                        needs_reload.add(self.q.get(timeout=0.001))
+                        needs_reload_list += [self.q.get(timeout=0.005)]
                 except Empty:
                     pass
+                self.print(f'{needs_reload_list = }')
+                needs_reload: set[str] = set(needs_reload_list)
                 rev_deps = defaultdict[str, list[str]](list)
                 for k, t in tracked.items():
                     for d in t.deps:
@@ -134,11 +136,19 @@ class Watcher:
                 self.print(f'{roots = }')
                 self.print(f'{order = }')
                 modules = [ tracked[name].module for name in order ]
-            for m in modules:
-                # self.print('begin reimporting', m.__name__)
-                self.module_reload_counts[m.__name__] += 1
-                importlib.reload(m)
-                # self.print('  end reimporting', m.__name__)
+
+            # rapidly saving .py files can cause the cached .pyc bytecode to get stale
+            sys.dont_write_bytecode = True
+
+            try:
+                for m in modules:
+                    # self.print('begin reimporting', m.__name__)
+                    self.module_reload_counts[m.__name__] += 1
+                    importlib.reload(m)
+                    # self.print('  end reimporting', m.__name__)
+            except:
+                import traceback
+                traceback.print_exc()
 
     def module_reload_count(self, m: str):
         return self.module_reload_counts[m]

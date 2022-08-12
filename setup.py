@@ -7,7 +7,6 @@ requirements = '''
 '''
 
 console_scripts = '''
-    viable-example=viable.example:main
 '''
 
 name='viable'

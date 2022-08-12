@@ -43,7 +43,7 @@ def input(store: dict[str, str | bool], name: str, type: str, value: str | None 
     else:
         return f'input {type=} {name=} value="{esc(str(state))}"'
 
-@serve.one('/')
+@serve.route('/')
 def index() -> Iterator[Node | dict[str, str] | str]:
     global server_redraws
     server_redraws += 1
@@ -120,3 +120,10 @@ def index() -> Iterator[Node | dict[str, str] | str]:
         """.split()
     }
     yield pre(pformat(scope, width=40), user_select="text")
+
+def main():
+    print('main', __name__)
+    serve.run()
+
+if __name__ == '__main__':
+    main()

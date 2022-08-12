@@ -11,7 +11,7 @@ from pprint import pformat, pprint
 from jox import jox
 from jix import jix
 
-print(jox(1))
+print(jox_value := (jox(74), jix(123)))
 
 watch()
 
@@ -20,7 +20,7 @@ serve.suppress_flask_logging()
 from datetime import datetime
 
 try:
-    request_count
+    request_count # type: ignore
 except NameError:
     request_count = 0
     server_start = datetime.now()
@@ -48,14 +48,14 @@ def input(store: dict[str, str | bool], name: str, type: str, value: str | None 
     else:
         return f'input {type=} {name=} value="{esc(str(state))}"'
 
-@serve.route('/')
+@serve.route()
 def index() -> Iterator[Node | dict[str, str] | str]:
     global request_count
     request_count += 1
 
-    server_age = round((datetime.now() - server_start).total_seconds())
+    server_age = round((datetime.now() - server_start).total_seconds(), 1)
 
-    yield V.title('viable example')
+    yield V.head(V.title('viable example'))
 
     yield dict(
         oninput="update_query(input_values()); refresh()",
@@ -79,6 +79,8 @@ def index() -> Iterator[Node | dict[str, str] | str]:
     store: dict[str, str | bool] = {}
 
     yield V.raw(f'''
+        <pre>{jox_value}</pre>
+        <pre>{server_age}</pre>
         <label>
             <{input(store, type='checkbox', name='autoreload')}/>
             autoreload
@@ -133,11 +135,17 @@ def index() -> Iterator[Node | dict[str, str] | str]:
         f'{jox(0)=}',
         user_select="text",
         position='relative',
-        width  = 188,
-        height = 86,
-        left   = 64,
-        top    = 25,
+        width  = 141,
+        height = 142,
+        left   = 67,
+        top    = 34,
         border='1px #ccc solid',
     )
 
-serve.run()
+def main():
+    print('main', __name__)
+    serve.run()
+
+if __name__ == '__main__':
+    main()
+

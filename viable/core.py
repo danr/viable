@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import *
+from typing import Iterable, Callable, ParamSpec, TypeVar, Generic
 
 import os
 import pickle

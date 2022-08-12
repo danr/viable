@@ -95,7 +95,7 @@ css_props = {
         transition-duration transition-property transition-timing-function
         unicode-bidi user-select vertical-align visibility white-space widows
         width word-break word-spacing word-wrap writing-mode z-index
-'''.split()
+    '''.split()
 }
 for m, margin in {'m': 'margin', 'p': 'padding', 'b': 'border'}.items():
     css_props[m] = [margin]

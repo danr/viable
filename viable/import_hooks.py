@@ -146,6 +146,8 @@ class Watcher:
                     self.module_reload_counts[m.__name__] += 1
                     importlib.reload(m)
                     # self.print('  end reimporting', m.__name__)
+                names = [m.__name__ for m in modules]
+                print(f'[reloaded {", ".join(names)}]')
             except:
                 import traceback
                 traceback.print_exc()

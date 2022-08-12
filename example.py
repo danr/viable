@@ -2,8 +2,7 @@ from __future__ import annotations
 from typing import *
 
 from flask import request
-from viable import serve, esc, div, pre, Node, js, watch
-from viable.import_hooks import watcher
+from viable import serve, esc, div, pre, Node, js
 import viable as V
 
 from pprint import pformat, pprint
@@ -13,20 +12,18 @@ from jix import jix
 
 print(jox_value := (jox(74), jix(123)))
 
-watch()
+# import sys
+
+# pprint(sys.path_importer_cache)
 
 serve.suppress_flask_logging()
 
 from datetime import datetime
+server_start = datetime.now()
+last_msg = ''
+server_redraws = 0
 
-try:
-    request_count # type: ignore
-except NameError:
-    request_count = 0
-    server_start = datetime.now()
-    last_msg = ''
-
-@serve.expose
+# @serve.expose
 def example_exposed(*args: str):
     print(args)
     global last_msg
@@ -115,8 +112,6 @@ def index() -> Iterator[Node | dict[str, str] | str]:
     if store['autoreload']:
         yield V.queue_refresh()
 
-    reloads = dict(watcher.module_reload_counts)
-
     scope = {**locals(), **globals()}
     scope = {
         k: v
@@ -125,8 +120,7 @@ def index() -> Iterator[Node | dict[str, str] | str]:
             store
             last_msg
             server_age
-            request_count
-            reloads
+            server_redraws
         """.split()
     }
     yield pre(pformat(scope, width=40, sort_dicts=False), user_select="text")
@@ -141,6 +135,7 @@ def index() -> Iterator[Node | dict[str, str] | str]:
         top    = 34,
         border='1px #ccc solid',
     )
+    yield pre(str(jox(1)), user_select="text")
 
 def main():
     print('main', __name__)
@@ -148,4 +143,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

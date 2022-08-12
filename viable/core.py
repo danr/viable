@@ -18,8 +18,6 @@ from itsdangerous import Serializer, URLSafeSerializer
 
 from .tags import *
 
-from .import_hooks import watcher
-
 def is_true(x: str | bool | int):
     return str(x).lower() in 'true y yes 1'.split()
 
@@ -61,10 +59,6 @@ R = TypeVar('R')
 class Exposed(Generic[P, R]):
     _f: Callable[P, R]
     _serializer: Serializer
-    _gen: int
-
-    def __post_init__(self):
-        assert Exposed.function_generation(self._f) == self._gen
 
     def __call__(self, *args: P.args, **kws: P.kwargs) -> R:
         '''
@@ -101,22 +95,21 @@ class Exposed(Generic[P, R]):
             else:
                 py_args[k] = arg
         name = Exposed.function_name(self._f)
-        py_name_gen_kvs = self._serializer.dumps((name, self._gen, py_args))
-        if isinstance(py_name_gen_kvs, bytes):
-            py_name_gen_kvs = py_name_gen_kvs.decode()
+        py_name_kvs = self._serializer.dumps((name, py_args))
+        if isinstance(py_name_kvs, bytes):
+            py_name_kvs = py_name_kvs.decode()
         js_kvs = ','.join(
             json.dumps(k)+':'+v.fragment
             for k, v in js_args.items()
         )
         js_kvs = '{' + js_kvs + '}'
-        args_csv = ",".join((json.dumps(name), json.dumps(py_name_gen_kvs), js_kvs))
+        args_csv = ",".join((json.dumps(name), json.dumps(py_name_kvs), js_kvs))
         return f'call({args_csv})'
 
     def from_request(self, request_name: str, request_json: Any) -> Response:
-        py_name_gen_kvs, js_kvs = request_json
-        py_name, py_gen, py_kvs = self._serializer.loads(py_name_gen_kvs)
+        py_name_kvs, js_kvs = request_json
+        py_name, py_kvs = self._serializer.loads(py_name_kvs)
         assert request_name == py_name == Exposed.function_name(self._f)
-        assert Exposed.function_generation(self._f) == py_gen == self._gen
         arg_dict: dict[int, Any] = {}
         kws: dict[str, Any] = {}
         for k, v in (py_kvs | js_kvs).items():
@@ -135,14 +128,10 @@ class Exposed(Generic[P, R]):
 
     @staticmethod
     def function_name(f: Callable[..., Any]) -> str:
-        if g := Exposed.function_generation(f):
-            return f.__module__ + '.' + f.__qualname__ + '.' + str(g)
+        if f.__module__ == '__main__':
+            return f.__qualname__
         else:
             return f.__module__ + '.' + f.__qualname__
-
-    @staticmethod
-    def function_generation(f: Callable[..., Any]) -> int:
-        return watcher.module_reload_count(f.__module__)
 
 app = Flask(__name__)
 
@@ -162,10 +151,9 @@ class Serve:
 
     def expose(self, f: Callable[P, R]) -> Exposed[P, R]:
         name = Exposed.function_name(f)
-        gen = Exposed.function_generation(f)
         assert name != '<lambda>'
         assert name not in self.exposed
-        res = self.exposed[name] = Exposed(f, self._serializer, gen)
+        res = self.exposed[name] = Exposed(f, self._serializer)
         return res
 
     def __post_init__(self):
@@ -317,15 +305,7 @@ class Serve:
         resp.set_cookie('gen', str(self.generation))
         return resp
 
-    running: bool = False
-
     def run(self, host: str | None = None, port: int | None = None):
-
-        if self.running:
-            self.reload()
-            return
-        else:
-            self.running = True
 
         import viable.import_hooks as ih
         from pprint import pprint

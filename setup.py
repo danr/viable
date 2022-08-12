@@ -3,7 +3,6 @@ from setuptools import setup
 requirements = '''
     flask
     sorcery
-    inotify_simple
 '''
 
 console_scripts = '''

@@ -11,12 +11,6 @@ from .core import (
     serve,   # type: ignore
 )
 
-from .import_hooks import watch
-from . import import_hooks
-import_hooks.install()
-# from . import unused
-# unused.install()
-
 def queue_refresh(after_ms: float=100):
     js = minify(f'''
         clearTimeout(window._qrt)

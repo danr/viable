@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import *
+from typing import Iterator, Any, cast
 
 from flask import request
 from viable import serve, esc, div, pre, Node, js
@@ -12,18 +12,14 @@ from jix import jix
 
 print(jox_value := (jox(74), jix(123)))
 
-# import sys
-
-# pprint(sys.path_importer_cache)
-
 serve.suppress_flask_logging()
 
 from datetime import datetime
 server_start = datetime.now()
 last_msg = ''
-server_redraws = 0
+request_count = 0
 
-# @serve.expose
+@serve.expose
 def example_exposed(*args: str):
     print(args)
     global last_msg
@@ -120,7 +116,7 @@ def index() -> Iterator[Node | dict[str, str] | str]:
             store
             last_msg
             server_age
-            server_redraws
+            request_count
         """.split()
     }
     yield pre(pformat(scope, width=40, sort_dicts=False), user_select="text")
@@ -129,10 +125,10 @@ def index() -> Iterator[Node | dict[str, str] | str]:
         f'{jox(0)=}',
         user_select="text",
         position='relative',
-        width  = 141,
-        height = 142,
-        left   = 67,
-        top    = 34,
+        width  = 371,
+        height = 82,
+        left   = 174,
+        top    = 14,
         border='1px #ccc solid',
     )
     yield pre(str(jox(1)), user_select="text")

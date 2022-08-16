@@ -2,7 +2,6 @@ from setuptools import setup
 
 requirements = '''
     flask
-    sorcery
 '''
 
 console_scripts = '''

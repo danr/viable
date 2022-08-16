@@ -3,14 +3,10 @@ from typing import Iterator, Any, cast
 
 from flask import request
 from viable import serve, esc, div, pre, Node, js
+from viable.provenance import store, Var
 import viable as V
 
 from pprint import pformat, pprint
-
-from jox import jox
-from jix import jix
-
-print(jox_value := (jox(74), jix(123)))
 
 serve.suppress_flask_logging()
 
@@ -48,90 +44,47 @@ def index() -> Iterator[Node | dict[str, str] | str]:
 
     server_age = round((datetime.now() - server_start).total_seconds(), 1)
 
-    yield V.head(V.title('viable example'))
+    a = store.bool()
+    b = store.int(default=1)
+    c = store.str(default='c')
 
-    yield dict(
-        oninput="update_query(input_values()); refresh()",
-        css='''
-            & { }
-            body {
-                max-width: 13cm;
-                font-size: 16px;
+    with store.query:
+        d = store.bool()
+        e = store.int(default=1)
+
+        vars = [a, b, c, d, e]
+
+        store.assign_names(locals())
+        for i in range(e.value):
+            with store.sub(f'x{i}'):
+                f = store.str(default='c', options='c c2 c3'.split())
+                g = store.bool()
+                h = store.int(default=1)
+                store.assign_names(locals())
+                vars += [f, g, h]
+
+    with store.server:
+        i = store.str(default='c')
+
+    vars += [i]
+
+    store.assign_names(locals())
+
+
+    yield {
+        'sheet': '''
+            div > * {
+                width: 100px;
+                display: inline-block;
             }
-            ul {
-                list-style-type: none;
-                padding: 0;
-                margin: 0;
-            }
-            table {
-                table-layout: fixed;
-            }
-        ''',
-    )
-
-    store: dict[str, str | bool] = {}
-
-    yield V.raw(f'''
-        <pre>{jox_value}</pre>
-        <pre>{server_age}</pre>
-        <label>
-            <{input(store, type='checkbox', name='autoreload')}/>
-            autoreload
-        </label>
-
-        <p>Select a maintenance drone:</p>
-
-        <div><label><{input(store, type="radio", name="drone", value="huey")}/>Huey</label></div>
-        <div><label><{input(store, type="radio", name="drone", value="dewey")}/>Dewey</label></div>
-        <div><label><{input(store, type="radio", name="drone", value="louie")}/>Louie</label></div>
-
-        <label for="pet-select">Choose a pet:</label>
-        <select name="pets" id="pet-select">
-            <{input(store, type="option", name="pets", value="")}>--Please choose an option--</option>
-            <{input(store, type="option", name="pets", value="dog")}>Dog</option>
-            <{input(store, type="option", name="pets", value="cat")}>Cat</option>
-            <{input(store, type="option", name="pets", value="hamster")}>Hamster</option>
-            <{input(store, type="option", name="pets", value="parrot")}>Parrot</option>
-            <{input(store, type="option", name="pets", value="spider")}>Spider</option>
-            <{input(store, type="option", name="pets", value="goldfish")}>Goldfish</option>
-        </select>
-
-        <div>
-        <{input(store, type='text', name='message')}
-            oninput="{V.esc(
-                example_exposed.call(str(request.remote_addr), js('event.target.value'))
-            )}.then(refresh)"
-        />
-        </div> ​
-    ''')
-
-    if store['autoreload']:
-        yield V.queue_refresh()
-
-    scope = {**locals(), **globals()}
-    scope = {
-        k: v
-        for k, v in scope.items()
-        if k in """
-            store
-            last_msg
-            server_age
-            request_count
-        """.split()
+        '''
     }
-    yield pre(pformat(scope, width=40, sort_dicts=False), user_select="text")
-
-    yield pre(
-        f'{jox(0)=}',
-        user_select="text",
-        position='relative',
-        width  = 371,
-        height = 82,
-        left   = 174,
-        top    = 14,
-        border='1px #ccc solid',
-    )
-    yield pre(str(jox(1)), user_select="text")
+    yield from [
+        div(div(v.full_name), div(v.provenance), div(str(v.value)), v.input())
+        for v in vars
+    ]
+    yield V.button('defaults', onclick=store.defaults.goto())
+    yield div(str(server_age))
 
 def main():
     print('main', __name__)

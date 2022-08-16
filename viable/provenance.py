@@ -4,14 +4,21 @@ from dataclasses import dataclass, field, replace
 
 from collections import defaultdict
 from contextlib import contextmanager
-from flask import jsonify, request
+from flask import jsonify, request, g
+from werkzeug.local import LocalProxy
 from flask.wrappers import Response
-from sorcery import spell, no_spells # type: ignore
 import abc
 import json
 
 from viable import js, serve, input
 import viable as V
+
+def get_store() -> Store:
+    if not g.get('viable_stores'):
+        g.viable_stores = [Store()]
+    return g.viable_stores[-1]
+
+store: Store = LocalProxy(get_store) # type: ignore
 
 A = TypeVar('A')
 B = TypeVar('B')
@@ -21,67 +28,69 @@ def None_map(x: A | None, f: Callable[[A], B]) -> B | None:
     else:
         return f(x)
 
-def lhs() -> str:
-    @spell
-    def inner(frame_info: Any) -> str:
-        xs, _ = frame_info.assigned_names(allow_one=True)
-        return xs[0]
-    return inner() # type: ignore
-
-no_spells(lhs)
-
-Provenance = Literal['query', 'cookie', 'server']
+ProvenanceName = Literal['query', 'cookie', 'server']
 
 @dataclass(frozen=True)
 class Var(Generic[A], abc.ABC):
-    value: A
-    name: str|None = None
-    provenance: Provenance = cast(Provenance, None)
+    default: A
+    name: str = ''
 
     @abc.abstractmethod
     def from_str(self, s: str | Any) -> A:
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def input(self, m: Store) -> V.Tag:
-        raise NotImplementedError
+    def __post_init__(self):
+        store.init_var(self)
+
+    @property
+    def value(self) -> A:
+        return store.value(self)
+
+    @property
+    def full_name(self) -> str:
+        return store[self].full_name
+
+    @property
+    def provenance(self) -> str:
+        return store[self].provenance
 
 VarAny = TypeVar('VarAny', bound=Var[Any])
 
 @dataclass(frozen=True)
 class Int(Var[int]):
-    value: int=0
+    default: int=0
     min: int|None=None
     max: int|None=None
-    desc: str|None=None
-    help: str|None=None
-    type: Literal['range', 'input', 'number'] = 'input'
 
     def from_str(self, s: str):
         try:
             ret = int(s)
         except:
-            ret = self.value
+            ret = self.default
         if self.min is not None and ret < self.min:
             ret = self.min
         if self.max is not None and ret > self.max:
             ret = self.max
         return ret
 
-    def input(self, m: Store):
+    def input(self, type: Literal['input', 'range', 'number'] = 'input', **attrs: str | bool | None):
         return input(
             value=str(self.value),
-            oninput=m.update_untyped({self: js('this.value')}).goto(),
-            type=self.type,
+            oninput=store.update(self, js('this.value')).goto(),
             min=None_map(self.min, str),
             max=None_map(self.max, str),
+            **attrs,
         )
+
+    def range(self, **attrs: str | bool | None):
+        return self.input(type='range', **attrs)
+
+    def number(self, **attrs: str | bool | None):
+        return self.input(type='number', **attrs)
 
 @dataclass(frozen=True)
 class Bool(Var[bool]):
-    value: bool=False
-    desc: str|None=None
-    help: str|None=None
+    default: bool=False
 
     def from_str(self, s: str):
         if isinstance(s, bool):
@@ -89,19 +98,17 @@ class Bool(Var[bool]):
         else:
             return s.lower() == 'true'
 
-    def input(self, m: Store):
+    def input(self):
         return input(
             checked=self.value,
-            oninput=m.update_untyped({self: js('this.checked')}).goto(),
+            oninput=store.update(self, js('this.checked')).goto(),
             type='checkbox',
         )
 
 @dataclass(frozen=True)
 class Str(Var[str]):
-    value: str=''
-    desc: str|None=None
-    help: str|None=None
-    options: None | tuple[str] = None
+    default: str=''
+    options: None | tuple[str] | list[str] = None
 
     def from_str(self, s: str) -> str:
         if self.options is not None:
@@ -112,10 +119,7 @@ class Str(Var[str]):
         else:
             return s
 
-    def update_handler(self, m: Store, iff:str|None=None):
-        return m.update_untyped({self: js('this.value')}).goto(iff=iff)
-
-    def input(self, m: Store, iff:str|None=None):
+    def input(self, iff:str|None=None):
         if self.options:
             return V.select(
                 *[
@@ -126,132 +130,205 @@ class Str(Var[str]):
                     )
                     for key in self.options
                 ],
-                oninput=m.update_untyped({self: js('this.selectedOptions[0].dataset.key')}).goto(iff=iff),
+                oninput=store.update(self, js('this.selectedOptions[0].dataset.key')).goto(iff=iff),
             )
         else:
             return input(
                 value=str(self.value),
-                oninput=self.update_handler(m, iff=iff),
+                oninput=store.update(self, js('this.value')).goto(iff=iff)
             )
 
-@dataclass(frozen=True)
+@dataclass(frozen=False)
 class StoredValue:
     goto_value: Any | js
-    initial_value: Any
-    default_value: Any
+    updated: bool
+    var: Var[Any]
+    provenance: str
+    sub_prefix: str
+    name: str
+
+    @property
+    def full_name(self) -> str:
+        return self.sub_prefix + self.name
+
+    @property
+    def initial_value(self) -> Any:
+        return self.var.value
+
+    @property
+    def default_value(self) -> Any:
+        return self.var.default
+
+from flask import after_this_request
+
+def update_query(kvs: dict[str, Any | js]):
+    s = js.convert_dict(kvs).fragment
+    return f'update_query({s})'
+
+def update_cookies(kvs: dict[str, str]) -> Any:
+    prev = json.loads(request.cookies.get('v', '{}'))
+    next = {**prev, **kvs}
+    if prev == next:
+        return {}
+    else:
+        @after_this_request
+        def _(response: Response) -> Response:
+            response.set_cookie('v', json.dumps(next))
+            return response
+        return {'refresh': True}
 
 DB: dict[str, Any] = {}
 
-def init_store() -> dict[Provenance, Callable[[str, Any], Any]]:
-    return {
-        'server': DB.get,
-        'cookie': json.loads(request.cookies.get('kaka', "{}")).get,
-        'query': request.args.get,
-    }
+def update_server(kvs: dict[str, str]) -> Any:
+    DB.update(kvs)
+    serve.reload()
+    gen = serve.generation
+    @after_this_request
+    def _(response: Response) -> Response:
+        response.set_cookie('gen', str(gen))
+        return response
+    return {'gen': gen}
 
-def empty() -> dict[Provenance, Callable[[str, Any], Any]]:
-    return {
-        'server': lambda _a, _b: None,
-        'cookie': lambda _a, _b: None,
-        'query':  lambda _a, _b: None,
-    }
+@dataclass(frozen=True)
+class Provenance:
+    js_side: None | Callable[[dict[str, Any | js]], str] = None
+    py_side: None | Callable[[dict[str, str]], dict[str, Any]] = None
+    get: Callable[[], Callable[[str, Any], Any]] = lambda: lambda k, d: d
+
+provenances: dict[str, Provenance] = {
+    'query':  Provenance(update_query, None,           lambda: request.args.get),
+    'cookie': Provenance(None,         update_cookies, lambda: json.loads(request.cookies.get('v', '{}')).get),
+    'server': Provenance(None,         update_server,  lambda: DB.get),
+}
+
+@serve.expose
+def update_py_side(pkvs: dict[str, dict[str, Any]]) -> Response:
+    out: dict[str, Any] = {}
+    for p_name, kvs in pkvs.items():
+        p = provenances[p_name]
+        assert p.py_side
+        out |= p.py_side(kvs)
+    return jsonify(out)
+
+from contextlib import contextmanager
+from typing import ClassVar
 
 @dataclass(frozen=True)
 class Store:
-    default_provenance: Provenance = 'cookie'
-    store: dict[Provenance, Callable[[str, Any], Any]] = field(default_factory=init_store)
-    values: dict[Var[Any], StoredValue] = field(default_factory=dict)
+    default_provenance: ProvenanceName = 'cookie'
+    values: dict[int, StoredValue] = field(default_factory=dict)
     sub_prefix: str = ''
 
-    @staticmethod
-    def empty(default_provenance: Provenance = 'cookie'):
-        return Store(default_provenance=default_provenance, store=empty())
+    int: ClassVar = Int
+    str: ClassVar = Str
+    bool: ClassVar = Bool
 
-    def __post_init__(self):
-        no_spells(Store.var)
+    @property
+    def cookie(self):
+        return self.at('cookie')
 
-    def var(self, x: VarAny) -> VarAny:
-        if x.provenance is None:
-            x = replace(x, provenance=self.default_provenance)
-        if x.name:
-            name = x.name
-        else:
-            name = lhs()
-        assert name is not None
-        if self.sub_prefix:
-            name = self.sub_prefix + name
-        default = x.value
-        xx = replace(x, name=name, value=x.from_str(self.store[x.provenance](name, default)))
-        self.values[xx] = StoredValue(xx.value, xx.value, default)
-        return xx
+    @property
+    def query(self):
+        return self.at('query')
 
-    def update(self, to: dict[Var[A], A]) -> Store:
-        return self.update_untyped(cast(dict[Any, Any], to))
+    @property
+    def server(self):
+        return self.at('server')
 
-    def update_untyped(self, to: dict[Var[Any], Any | js]) -> Store:
-        values = {
-            k: replace(v, goto_value=to.get(k, v.goto_value))
-            for k, v in self.values.items()
-        }
-        return Store(self.default_provenance, self.store, values, self.sub_prefix)
+    @contextmanager
+    def _focus(self):
+        assert g.viable_stores
+        g.viable_stores.append(self)
+        yield
+        res = g.viable_stores.pop()
+        assert res is self
 
-    def defaults(self) -> Store:
-        values = {
-            k: replace(v, goto_value=v.default_value)
-            for k, v in self.values.items()
-        }
-        return Store(self.default_provenance, self.store, values, self.sub_prefix)
+    @contextmanager
+    def at(self, provenance: str):
+        next = replace(self, default_provenance=provenance)
+        with next._focus():
+            yield
 
     @contextmanager
     def sub(self, prefix: str):
         full_prefix = self.sub_prefix + prefix + '_'
-        for x, _ in self.values.items():
-            assert x.name is not None
-            assert not x.name.startswith(full_prefix)
-        st = Store(self.default_provenance, self.store, {}, full_prefix)
-        yield st
-        self.values.update(st.values)
+        next = replace(self, sub_prefix=full_prefix)
+        with next._focus():
+            yield
+
+    def init_var(self, x: Var[Any]):
+        provenance = self.default_provenance
+        name = x.name
+        if not name:
+            name = f'_{len(self.values)}'
+        self.values[id(x)] = StoredValue(
+            goto_value=None,
+            updated=False,
+            var=x,
+            provenance=provenance,
+            sub_prefix=self.sub_prefix,
+            name=name,
+        )
+
+    def value(self, x: Var[A]) -> A:
+        sv = self[x]
+        s = provenances[sv.provenance].get()(sv.full_name, sv.default_value)
+        return sv.var.from_str(s)
+
+    def __getitem__(self, x: Var[Any]) -> StoredValue:
+        return self.values[id(x)]
+
+    def __setitem__(self, x: Var[Any], sv: StoredValue):
+        self.values[id(x)] = sv
+
+    def assign_names(self, names: dict[str, Var[Any] | Any]):
+        for k, v in names.items():
+            if isinstance(v, Var) and not v.name and (sv := self.values.get(id(v))):
+                self[v] = replace(sv, name=k)
+
+    def update(self, var: Var[A], val: A | js) -> Store:
+        return self.update_untyped((var, val))
+
+    def update_untyped(self, *to: tuple[Var[Any], Any | js]) -> Store:
+        next = replace(self, values=self.values.copy())
+        for var, goto in to:
+            next[var] = replace(
+                next[var],
+                goto_value=goto,
+                updated=True
+            )
+        return next
+
+    @property
+    def defaults(self) -> Store:
+        values = {
+            var: replace(sv, goto_value=sv.default_value, updated=True)
+            for var, sv in self.values.items()
+        }
+        return replace(self, values=values)
 
     def full_name(self, x: Var[Any]) -> str:
         assert x.name is not None
         return x.name
 
     def goto(self, iff: str | None=None) -> str:
-        updated = [
-            (k, v)
-            for k, v in self.values.items()
-            if v.goto_value is not v.initial_value
-        ]
-        q = {
-            k.name: v.goto_value
-            for k, v in updated
-            if k.provenance == 'query'
-        }
-        updated = [
-            (k, v)
-            for k, v in self.values.items()
-            if v.goto_value is not v.initial_value
-            if k.provenance != 'query'
-        ]
-        if q:
-            kvs = ','.join(
-                json.dumps(k)+':'+(v.fragment if isinstance(v, js) else json.dumps(v))
-                for k, v in q.items()
-            )
-            kvs = '{' + kvs + '}'
-            q_str = f'update_query({kvs});refresh()'
-        else:
-            q_str = ''
-        if updated:
-            s_str = cook.call(
-                *(v.goto_value for _, v in updated),
-                keys=[(k.provenance, k.name) for k, _ in updated]
-            )
-        else:
-            s_str = ''
-        out = (q_str + ';' + s_str).strip(';')
+        by_provenance: dict[str, dict[str, Any | js]] = defaultdict(dict)
+        for _v, sv in self.values.items():
+            if sv.updated and sv.goto_value != sv.initial_value:
+                by_provenance[sv.provenance][sv.full_name] = sv.goto_value
+        out_parts: list[str] = []
+        py_side: dict[str, dict[str, Any | js]] = {}
+        for p_name, kvs in by_provenance.items():
+            p = provenances[p_name]
+            if p.js_side:
+                out_parts += [p.js_side(kvs).strip(';')]
+            if p.py_side:
+                py_side[p_name] = kvs
+        if py_side:
+            out_parts += [update_py_side.call(js.convert_dicts(py_side))]
+        out = ';'.join(out_parts)
         if iff:
-            return 'if (' + iff + ') {' + out + '}'
+            return 'if(' + iff + '){' + out + '}'
         else:
             return out
 
@@ -261,25 +338,3 @@ class Store:
             return V.script(V.raw(script), eval=True)
         else:
             return V.text('')
-
-@serve.expose
-def cook(*values: Any, keys: list[tuple[Provenance, str]]) -> Response:
-    next: defaultdict[Provenance, dict[str, Any]] = defaultdict(dict)
-    for (p, n), v in zip(keys, values):
-        next[p][n] = v
-    assert not next['query']
-    kaka = None
-    gen = None
-    refresh = False
-    if next_DB := next['server']:
-        DB.update(next_DB)
-        serve.reload()
-        gen = serve.generation
-    if next_cookie := next['cookie']:
-        prev = json.loads(request.cookies.get('kaka', "{}"))
-        kaka = json.dumps({**prev, **next_cookie})
-        refresh = True
-    resp = jsonify({'refresh': refresh, 'gen': gen})
-    if kaka: resp.set_cookie('kaka', kaka)
-    if gen: resp.set_cookie('gen', str(gen))
-    return resp

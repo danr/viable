@@ -52,6 +52,22 @@ def serializer_factory() -> Serializer:
 class js:
     fragment: str
 
+    @staticmethod
+    def convert_dict(d: dict[str, Any | js]) -> js:
+        out = ','.join(
+            f'''{
+                str(k) if k.isdigit() else json.dumps(k)
+            }:{
+                v.fragment if isinstance(v, js) else json.dumps(v)
+            }'''
+            for k, v in d.items()
+        )
+        return js('{' + out + '}')
+
+    @staticmethod
+    def convert_dicts(d: dict[str, dict[str, Any | js]]) -> js:
+        return js.convert_dict({k: js.convert_dict(vs) for k, vs in d.items()})
+
 P = ParamSpec('P')
 R = TypeVar('R')
 
@@ -88,22 +104,18 @@ class Exposed(Generic[P, R]):
         >>> elem = input(onclick=Sum.call(1, js('this.value')))
         '''
         py_args: dict[str | int, Any] = {}
-        js_args: dict[str | int, js] = {}
+        js_args: dict[str, js] = {}
         for k, arg in (dict(enumerate(args)) | kws).items():
             if isinstance(arg, js):
-                js_args[k] = arg
+                js_args[str(k)] = arg
             else:
                 py_args[k] = arg
         name = Exposed.function_name(self._f)
         py_name_kvs = self._serializer.dumps((name, py_args))
         if isinstance(py_name_kvs, bytes):
             py_name_kvs = py_name_kvs.decode()
-        js_kvs = ','.join(
-            json.dumps(k)+':'+v.fragment
-            for k, v in js_args.items()
-        )
-        js_kvs = '{' + js_kvs + '}'
-        args_csv = ",".join((json.dumps(name), json.dumps(py_name_kvs), js_kvs))
+        js_kvs = js.convert_dict(js_args)
+        args_csv = ",".join((json.dumps(name), json.dumps(py_name_kvs), js_kvs.fragment))
         return f'call({args_csv})'
 
     def from_request(self, request_name: str, request_json: Any) -> Response:

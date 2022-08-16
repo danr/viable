@@ -56,7 +56,8 @@ class js:
     def convert_dict(d: dict[str, Any | js]) -> js:
         out = ','.join(
             f'''{
-                str(k) if k.isdigit() else json.dumps(k)
+                k if re.match('^(0|[1-9][0-9]*|[_a-zA-Z][_a-zA-Z0-9]*)$', k)
+                else json.dumps(k)
             }:{
                 v.fragment if isinstance(v, js) else json.dumps(v)
             }'''

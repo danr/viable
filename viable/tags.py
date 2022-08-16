@@ -207,22 +207,31 @@ class Tag(Node):
                     if re.match(r'[\w\-\.,:;/+@#?(){}[\]]+$', v):
                         # https://html.spec.whatwg.org/multipage/syntax.html#unquoted
                         kvs += [f'{k}={v}']
+                    elif re.match(r'[\s<>=`\w\-\.,:;/+@#?(){}[\]"]+$', v):
+                        kvs += [f"{k}='{v}'"]
                     else:
                         kvs += [f'{k}="{esc(v)}"']
             attrs = ' ' + ' '.join(kvs)
         else:
             attrs = ''
         name = self.tag_name()
+        close = f'</{name}>'
+        if name in (
+            # https://html.spec.whatwg.org/multipage/syntax.html#void-elements
+            'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+            'link', 'meta', 'source', 'track', 'wbr',
+        ):
+            close = ''
         if len(self.children) == 0:
-            yield ' ' * i + f'<{name}{attrs}></{name}>'
+            yield ' ' * i + f'<{name}{attrs}>{close}'
         elif len(self.children) == 1 and isinstance(self.children[0], text):
-            yield ' ' * i + f'<{name}{attrs}>{self.children[0].to_str()}</{name}>'
+            yield ' ' * i + f'<{name}{attrs}>{self.children[0].to_str()}{close}'
         else:
             yield ' ' * i + f'<{name}{attrs}>'
             for child in self.children:
                 if child:
                     yield from child.to_strs(indent=indent, i=i+indent)
-            yield ' ' * i + f'</{name}>'
+            yield ' ' * i + close
 
     def make_classes(self, classes: dict[str, tuple[str, str]]) -> dict[str, tuple[str, str]]:
         for decls in self.inline_sheet:

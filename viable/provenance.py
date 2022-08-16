@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import *
+from typing import TypeVar, Callable, Literal, Generic, Any
 from dataclasses import dataclass, field, replace
 
 from collections import defaultdict
@@ -18,6 +18,15 @@ def get_store() -> Store:
         g.viable_stores = [Store()]
     return g.viable_stores[-1]
 
+
+@contextmanager
+def _focus_store(s: Store):
+    assert g.viable_stores
+    g.viable_stores.append(s)
+    yield
+    res = g.viable_stores.pop()
+    assert res is s
+
 store: Store = LocalProxy(get_store) # type: ignore
 
 A = TypeVar('A')
@@ -27,8 +36,6 @@ def None_map(x: A | None, f: Callable[[A], B]) -> B | None:
         return None
     else:
         return f(x)
-
-ProvenanceName = Literal['query', 'cookie', 'server']
 
 @dataclass(frozen=True)
 class Var(Generic[A], abc.ABC):
@@ -215,7 +222,7 @@ from typing import ClassVar
 
 @dataclass(frozen=True)
 class Store:
-    default_provenance: ProvenanceName = 'cookie'
+    default_provenance: str = 'cookie'
     values: dict[int, StoredValue] = field(default_factory=dict)
     sub_prefix: str = ''
 
@@ -236,24 +243,16 @@ class Store:
         return self.at('server')
 
     @contextmanager
-    def _focus(self):
-        assert g.viable_stores
-        g.viable_stores.append(self)
-        yield
-        res = g.viable_stores.pop()
-        assert res is self
-
-    @contextmanager
     def at(self, provenance: str):
         next = replace(self, default_provenance=provenance)
-        with next._focus():
+        with _focus_store(next):
             yield
 
     @contextmanager
     def sub(self, prefix: str):
         full_prefix = self.sub_prefix + prefix + '_'
         next = replace(self, sub_prefix=full_prefix)
-        with next._focus():
+        with _focus_store(next):
             yield
 
     def init_var(self, x: Var[Any]):
@@ -306,10 +305,6 @@ class Store:
             for var, sv in self.values.items()
         }
         return replace(self, values=values)
-
-    def full_name(self, x: Var[Any]) -> str:
-        assert x.name is not None
-        return x.name
 
     def goto(self, iff: str | None=None) -> str:
         by_provenance: dict[str, dict[str, Any | js]] = defaultdict(dict)

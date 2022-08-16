@@ -111,20 +111,19 @@ class Exposed(Generic[P, R]):
             else:
                 py_args[k] = arg
         name = Exposed.function_name(self._f)
-        py_name_kvs = self._serializer.dumps((name, py_args))
-        if isinstance(py_name_kvs, bytes):
-            py_name_kvs = py_name_kvs.decode()
-        js_kvs = js.convert_dict(js_args)
-        args_csv = ",".join((json.dumps(name), json.dumps(py_name_kvs), js_kvs.fragment))
-        return f'call({args_csv})'
+        py_name_and_args = self._serializer.dumps((name, py_args))
+        if isinstance(py_name_and_args, bytes):
+            py_name_and_args = py_name_and_args.decode()
+        call_args = ','.join([
+            json.dumps(py_name_and_args),
+            js.convert_dict(js_args).fragment,
+        ])
+        return f'call({call_args}) // {name} {py_args}'
 
-    def from_request(self, request_name: str, request_json: Any) -> Response:
-        py_name_kvs, js_kvs = request_json
-        py_name, py_kvs = self._serializer.loads(py_name_kvs)
-        assert request_name == py_name == Exposed.function_name(self._f)
+    def from_request(self, py_args: dict[str | int, Any], js_args: dict[str, Any]) -> Response:
         arg_dict: dict[int, Any] = {}
         kws: dict[str, Any] = {}
-        for k, v in (py_kvs | js_kvs).items():
+        for k, v in (py_args | js_args).items():
             if isinstance(k, int) or k.isdigit():
                 k = int(k)
                 arg_dict[k] = v
@@ -169,10 +168,13 @@ class Serve:
         return res
 
     def __post_init__(self):
-        @app.post('/call/<name>') # type: ignore
-        def call(name: str):
+        @app.post('/call') # type: ignore
+        def call():
+            request_json: Any = request.json
+            py_name_and_args, js_args = request_json
+            py_name, py_args = self._serializer.loads(py_name_and_args)
             try:
-                return self.exposed[name].from_request(name, request.json)
+                return self.exposed[py_name].from_request(py_args, js_args)
             except:
                 traceback.print_exc()
                 return '', 400

@@ -28,11 +28,11 @@ viable_js = str(r'''
             }
         }
     }
-    async function call(name, py_name_kvs, js_kvs) {
-        const resp = await fetch("/call/" + name, {
+    async function call(py_name_and_args, js_args) {
+        const resp = await fetch('/call', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify([py_name_kvs, js_kvs]),
+            body: JSON.stringify([py_name_and_args, js_args]),
         })
         const body = await resp.json()
         await execute(body)

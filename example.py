@@ -21,21 +21,63 @@ def example_exposed(*args: str):
     global last_msg
     last_msg = ' '.join([*args, cast(Any, request).headers['User-Agent']])
 
-def input(store: dict[str, str | bool], name: str, type: str, value: str | None = None, default: str | bool | None = None):
-    if default is None:
-        default = ""
-    state = request.args.get(name, default)
-    if type == 'checkbox':
-        state = str(state).lower() == 'true'
-    store[name] = state
-    if type == 'checkbox':
-        return f'input {type=} {name=} {"checked" if state else ""}'
-    elif type == 'radio':
-        return f'input {type=} {name=} {value=} {"checked" if state == value else ""}'
-    elif type == 'option':
-        return f'option {type=} {value=} {"selected" if state == value else ""}'
+from flask import g, after_this_request
+from flask.wrappers import Response
+import sqlite3
+
+with sqlite3.connect('example.db') as con:
+    con.executescript('''
+        pragma journal_mode=WAL;
+        create table if not exists todos (
+            text text default '' not null,
+            done int default 0 not null,
+            created datetime default (datetime('now', 'localtime')) not null,
+            deleted datetime default null
+        );
+        insert into todos(text)
+            select "add some todos"
+            where (select count(*) from todos) == 0;
+    ''')
+
+def serve_reload(reason: str):
+    @after_this_request
+    def later(response: Response) -> Response:
+        print('serve_reload', reason)
+        serve.reload()
+        return response
+
+def get_con() -> sqlite3.Connection:
+    if 'con' in g:
+        return g.con
     else:
-        return f'input {type=} {name=} value="{esc(str(state))}"'
+        con = sqlite3.connect('example.db')
+        con.create_function('serve_reload', 1, serve_reload)
+        con.executescript('''
+            create temp trigger notify_update
+                after update on todos
+                begin
+                    select serve_reload('update');
+                end;
+            create temp trigger notify_insert
+                after insert on todos
+                begin
+                    select serve_reload('insert');
+                end;
+        ''')
+        g.con = con
+        @after_this_request
+        def cleanup(response: Response) -> Response:
+            con.commit()
+            con.close()
+            del g.con
+            return response
+        return con
+
+@serve.expose
+def sql(cmd: str, *args: Any) -> Any:
+    con = get_con()
+    con.execute(cmd, args)
+    con.commit()
 
 @serve.route()
 def index() -> Iterator[Node | dict[str, str] | str]:
@@ -68,8 +110,46 @@ def index() -> Iterator[Node | dict[str, str] | str]:
 
     vars += [i]
 
+    with store.query:
+        visibility = store.str(default='all', options='all done todo'.split())
+
     store.assign_names(locals())
 
+    with sqlite3.connect('example.db') as con:
+        con.row_factory = sqlite3.Row
+        yield visibility.input()
+
+        yield V.button('add todo', onclick=sql.call('insert into todos default values'))
+
+        if con.execute('select exists (select 1 from todos where deleted is not null)').fetchone()[0]:
+            yield V.button('undo delete', onclick=sql.call('''
+                update todos set deleted = NULL
+                    where rowid = (select rowid from todos order by deleted desc limit 1)
+            '''))
+
+        stmt = 'select rowid, text, done from todos where deleted is null'
+        if visibility.value == 'done':
+            stmt += ' and done'
+        elif visibility.value == 'todo':
+            stmt += ' and not done'
+        for row in con.execute(stmt):
+            rowid = row['rowid']
+            print(dict(zip(row.keys(), row)))
+            yield V.div(
+                V.input(
+                    type='checkbox',
+                    checked=bool(row['done']),
+                    oninput=sql.call('update todos set done = ? where rowid = ?', js('this.checked'), rowid),
+                ),
+                V.input(
+                    value=row['text'],
+                    oninput=sql.call('update todos set text = ? where rowid = ?', js('this.value'), rowid),
+                ),
+                V.button(
+                    'delete',
+                    onclick=sql.call('update todos set deleted = strftime("%Y-%m-%d %H:%M:%f", "now", "localtime") where rowid = ?', rowid),
+                ),
+            )
 
     yield {
         'sheet': '''

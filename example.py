@@ -29,6 +29,7 @@ with sqlite3.connect('example.db') as con:
     con.executescript('''
         pragma journal_mode=WAL;
         create table if not exists todos (
+            id integer primary key autoincrement,
             text text default '' not null,
             done int default 0 not null,
             created datetime default (datetime('now', 'localtime')) not null,
@@ -127,27 +128,27 @@ def index() -> Iterator[Node | dict[str, str] | str]:
                     where rowid = (select rowid from todos order by deleted desc limit 1)
             '''))
 
-        stmt = 'select rowid, text, done from todos where deleted is null'
+        stmt = 'select id, text, done from todos where deleted is null'
         if visibility.value == 'done':
             stmt += ' and done'
         elif visibility.value == 'todo':
             stmt += ' and not done'
         for row in con.execute(stmt):
-            rowid = row['rowid']
+            id = row['id']
             print(dict(zip(row.keys(), row)))
             yield V.div(
                 V.input(
                     type='checkbox',
                     checked=bool(row['done']),
-                    oninput=sql.call('update todos set done = ? where rowid = ?', js('this.checked'), rowid),
+                    oninput=sql.call('update todos set done = ? where rowid = ?', js('this.checked'), id),
                 ),
                 V.input(
                     value=row['text'],
-                    oninput=sql.call('update todos set text = ? where rowid = ?', js('this.value'), rowid),
+                    oninput=sql.call('update todos set text = ? where rowid = ?', js('this.value'), id),
                 ),
                 V.button(
                     'delete',
-                    onclick=sql.call('update todos set deleted = strftime("%Y-%m-%d %H:%M:%f", "now", "localtime") where rowid = ?', rowid),
+                    onclick=sql.call('update todos set deleted = strftime("%Y-%m-%d %H:%M:%f", "now", "localtime") where rowid = ?', id),
                 ),
             )
 

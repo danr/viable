@@ -125,7 +125,7 @@ def index() -> Iterator[Node | dict[str, str] | str]:
         if con.execute('select exists (select 1 from todos where deleted is not null)').fetchone()[0]:
             yield V.button('undo delete', onclick=sql.call('''
                 update todos set deleted = NULL
-                    where rowid = (select rowid from todos order by deleted desc limit 1)
+                    where id = (select id from todos order by deleted desc limit 1)
             '''))
 
         stmt = 'select id, text, done from todos where deleted is null'
@@ -140,15 +140,15 @@ def index() -> Iterator[Node | dict[str, str] | str]:
                 V.input(
                     type='checkbox',
                     checked=bool(row['done']),
-                    oninput=sql.call('update todos set done = ? where rowid = ?', js('this.checked'), id),
+                    oninput=sql.call('update todos set done = ? where id = ?', js('this.checked'), id),
                 ),
                 V.input(
                     value=row['text'],
-                    oninput=sql.call('update todos set text = ? where rowid = ?', js('this.value'), id),
+                    oninput=sql.call('update todos set text = ? where id = ?', js('this.value'), id),
                 ),
                 V.button(
                     'delete',
-                    onclick=sql.call('update todos set deleted = strftime("%Y-%m-%d %H:%M:%f", "now", "localtime") where rowid = ?', id),
+                    onclick=sql.call('update todos set deleted = strftime("%Y-%m-%d %H:%M:%f", "now", "localtime") where id = ?', id),
                 ),
             )
 

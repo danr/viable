@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from typing import Iterator, Any, cast
 
 from flask import request
@@ -106,10 +107,13 @@ def index() -> Iterator[Node | dict[str, str] | str]:
                 store.assign_names(locals())
                 vars += [f, g, h]
 
-    with store.server:
+    with store.db:
         i = store.str(default='c')
 
-    vars += [i]
+    with store.shared:
+        j = store.str(default='c')
+
+    vars += [i, j]
 
     with store.query:
         visibility = store.str(default='all', options='all done todo'.split())
@@ -140,6 +144,8 @@ def index() -> Iterator[Node | dict[str, str] | str]:
                 V.input(
                     type='checkbox',
                     checked=bool(row['done']),
+                    # checked=bool(row.done),
+                    # oninput=call(lambda x: row.update(done=x), js('this.checked'))
                     oninput=sql.call('update todos set done = ? where id = ?', js('this.checked'), id),
                 ),
                 V.input(

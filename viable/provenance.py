@@ -4,14 +4,143 @@ from dataclasses import dataclass, field, replace
 
 from collections import defaultdict
 from contextlib import contextmanager
-from flask import jsonify, request, g
-from werkzeug.local import LocalProxy
+from flask import after_this_request, jsonify, request, g
 from flask.wrappers import Response
+from werkzeug.local import LocalProxy
 import abc
+import atexit
 import json
+import os
+import secrets
+import signal
+import sqlite3
+import sys
+import threading
+import time
 
 from viable import js, serve, input
 import viable as V
+
+handlers: list[Callable[[int, Any], None]] = []
+
+def handle_signal(signum: int, _frame: Any):
+    for h in handlers:
+        h(signum, _frame)
+
+signal.signal(signal.SIGTERM, handle_signal)
+signal.signal(signal.SIGINT, handle_signal)
+atexit.register(lambda: handle_signal(0, None))
+
+class DB:
+    con: sqlite3.Connection
+    _closing: bool
+
+    def __init__(self, path: str):
+        self.con = sqlite3.connect(path, check_same_thread=False)
+        self._closing = False
+
+        self.con.executescript('''
+            pragma journal_mode=WAL;
+            create table if not exists data (
+                user text,
+                key text,
+                value text,
+                ts timestamp default (datetime('now', 'localtime')),
+                primary key (user, key)
+            );
+            create table if not exists meta (
+                user text,
+                key text,
+                value text,
+                ts timestamp default (datetime('now', 'localtime')),
+                primary key (user, key)
+            );
+        ''')
+
+        def handle_signal(signum: int, _frame: Any):
+            if not self._closing:
+                self.con.commit()
+                self.con.close()
+                self._closing = True
+                if signum in (signal.SIGTERM, signal.SIGINT):
+                    sys.exit(1)
+
+        handlers.append(handle_signal)
+
+        def spawn(f: Callable[[], None]) -> None:
+            threading.Thread(target=f, daemon=True).start()
+
+        spawn(self._writer)
+
+    def _writer(self):
+        last = 0
+        while True:
+            time.sleep(1.0)
+            if self._closing:
+                return
+            changes = self.con.total_changes - last
+            if changes:
+                print(f'committing {changes} changes')
+                last = self.con.total_changes
+                self.con.commit()
+
+    def user(self, shared: bool) -> str:
+        if shared:
+            return 'shared'
+        user = getattr(request, 'user', None)
+        if not user:
+            user = request.cookies.get('u')
+            if not user:
+                user = secrets.token_urlsafe(6)
+                self.con.executemany(
+                    'insert into meta(user, key, value) values (?, ?, ?)',
+                    [(user, k, v) for k, v in request.headers.items()]
+                )
+                @after_this_request
+                def later(response: Response) -> Response:
+                    response.set_cookie('u', user)
+                    return response
+            setattr(request, 'user', user)
+        return user
+
+    def update(self, kvs: dict[str, str], shared: bool) -> dict[str, Any]:
+        user = self.user(shared=shared)
+        self.con.executemany(
+            '''
+                insert into data(user, key, value) values (?, ?, ?)
+                on conflict(user, key)
+                do update set value = excluded.value, ts = excluded.ts
+            ''',
+            [(user, k, v) for k, v in kvs.items()]
+        )
+        # todo: do nothing if updated diff was zero
+        if shared:
+            serve.reload()
+            gen = serve.generation
+            @after_this_request
+            def later(response: Response) -> Response:
+                response.set_cookie('gen', str(gen))
+                return response
+            return {'gen': gen}
+        else:
+            return {'refresh': True}
+
+    def get(self, key: str, d: Any, shared: bool) -> Any:
+        user = self.user(shared=shared)
+        for v, in self.con.execute(
+            'select value from data where user = ? and key = ?',
+            [user, key]
+        ):
+            return v
+        return d
+
+_the_db: DB | None = None
+
+def get_db() -> DB:
+    global _the_db
+    if _the_db is None:
+        _the_db = DB(os.environ.get('VIABLE_DB', 'viable.db'))
+    return _the_db
 
 def get_store() -> Store:
     if not g.get('viable_stores'):
@@ -77,20 +206,19 @@ class Int(Var[int]):
             ret = self.max
         return ret
 
-    def input(self, type: Literal['input', 'range', 'number'] = 'input', **attrs: str | bool | None):
+    def input(self, type: Literal['input', 'range', 'number'] = 'input'):
         return input(
             value=str(self.value),
             oninput=store.update(self, js('this.value')).goto(),
             min=None_map(self.min, str),
             max=None_map(self.max, str),
-            **attrs,
         )
 
-    def range(self, **attrs: str | bool | None):
-        return self.input(type='range', **attrs)
+    def range(self):
+        return self.input(type='range')
 
-    def number(self, **attrs: str | bool | None):
-        return self.input(type='number', **attrs)
+    def number(self):
+        return self.input(type='number')
 
 @dataclass(frozen=True)
 class Bool(Var[bool]):
@@ -137,10 +265,16 @@ class Str(Var[str]):
                 oninput=store.update(self, js('this.selectedOptions[0].dataset.key')).goto(iff=iff),
             )
         else:
-            return input(
-                value=str(self.value),
-                oninput=store.update(self, js('this.value')).goto(iff=iff)
-            )
+            return input(**self.bind(iff))
+
+    def textarea(self):
+        return V.textarea(**self.bind())
+
+    def bind(self, iff:str|None=None):
+        return {
+            'value': str(self.value),
+            'oninput': store.update(self, js('this.value')).goto(iff),
+        }
 
 @dataclass(frozen=False)
 class StoredValue:
@@ -163,8 +297,6 @@ class StoredValue:
     def default_value(self) -> Any:
         return self.var.default
 
-from flask import after_this_request
-
 def update_query(kvs: dict[str, Any | js]):
     s = js.convert_dict(kvs).fragment
     return f'update_query({s})'
@@ -176,33 +308,22 @@ def update_cookies(kvs: dict[str, str]) -> Any:
         return {}
     else:
         @after_this_request
-        def _(response: Response) -> Response:
+        def later(response: Response) -> Response:
             response.set_cookie('v', json.dumps(next))
             return response
         return {'refresh': True}
-
-DB: dict[str, Any] = {}
-
-def update_server(kvs: dict[str, str]) -> Any:
-    DB.update(kvs)
-    serve.reload()
-    gen = serve.generation
-    @after_this_request
-    def _(response: Response) -> Response:
-        response.set_cookie('gen', str(gen))
-        return response
-    return {'gen': gen}
 
 @dataclass(frozen=True)
 class Provenance:
     js_side: None | Callable[[dict[str, Any | js]], str] = None
     py_side: None | Callable[[dict[str, str]], dict[str, Any]] = None
-    get: Callable[[], Callable[[str, Any], Any]] = lambda: lambda k, d: d
+    get: Callable[[str, Any], Any] = lambda k, d: d
 
 provenances: dict[str, Provenance] = {
-    'query':  Provenance(update_query, None,           lambda: request.args.get),
-    'cookie': Provenance(None,         update_cookies, lambda: json.loads(request.cookies.get('v', '{}')).get),
-    'server': Provenance(None,         update_server,  lambda: DB.get),
+    'query':  Provenance(update_query, None,                                            lambda k, d: request.args.get(k, d)),
+    'cookie': Provenance(None,         update_cookies,                                  lambda k, d: json.loads(request.cookies.get('v', '{}')).get(k, d)),
+    'shared': Provenance(None,         lambda kvs: get_db().update(kvs, shared=True),   lambda k, d: get_db().get(k, d, shared=True)),
+    'db':     Provenance(None,         lambda kvs: get_db().update(kvs, shared=False),  lambda k, d: get_db().get(k, d, shared=False)),
 }
 
 @serve.expose
@@ -236,8 +357,12 @@ class Store:
         return self.at('query')
 
     @property
-    def server(self):
-        return self.at('server')
+    def shared(self):
+        return self.at('shared')
+
+    @property
+    def db(self):
+        return self.at('db')
 
     @contextmanager
     def at(self, provenance: str):
@@ -268,7 +393,7 @@ class Store:
 
     def value(self, x: Var[A]) -> A:
         sv = self[x]
-        s = provenances[sv.provenance].get()(sv.full_name, sv.default_value)
+        s = provenances[sv.provenance].get(sv.full_name, sv.default_value)
         return sv.var.from_str(s)
 
     def __getitem__(self, x: Var[Any]) -> StoredValue:

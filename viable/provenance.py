@@ -18,7 +18,6 @@ def get_store() -> Store:
         g.viable_stores = [Store()]
     return g.viable_stores[-1]
 
-
 @contextmanager
 def _focus_store(s: Store):
     assert g.viable_stores
@@ -60,8 +59,6 @@ class Var(Generic[A], abc.ABC):
     @property
     def provenance(self) -> str:
         return store[self].provenance
-
-VarAny = TypeVar('VarAny', bound=Var[Any])
 
 @dataclass(frozen=True)
 class Int(Var[int]):

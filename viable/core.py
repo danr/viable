@@ -17,6 +17,7 @@ from flask.wrappers import Response
 from itsdangerous import Serializer, URLSafeSerializer
 
 from .tags import *
+from .minifier import minify
 
 def is_true(x: str | bool | int):
     return str(x).lower() in 'true y yes 1'.split()
@@ -308,15 +309,19 @@ class Serve:
         classes = body_node.make_classes({})
 
         if classes:
-            head_node += style(raw(minify('\n'.join(inst for _, inst in classes.values()), loader='css')))
+            head_node += style(raw('\n'.join(inst for _, inst in classes.values())))
 
         if include_hot:
             head_node += script(src="/viable.js", defer=True)
 
-        resp = make_response(
+        html_str = (
             f'<!doctype html>{newline}' +
             html(head_node, body_node, lang='en').to_str(indent)
         )
+        if compress:
+            html_str = minify(html_str, 'html')
+
+        resp = make_response(html_str)
         resp.set_cookie('gen', str(self.generation))
         return resp
 

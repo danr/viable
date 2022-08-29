@@ -1,10 +1,7 @@
 from __future__ import annotations
 from typing import Iterable, cast, Any
 
-from .minifier import minify
-
 import abc
-import re
 
 def esc(txt: str, __table: dict[int, str] = str.maketrans({
     "<": "&lt;",
@@ -202,15 +199,7 @@ class Tag(Node):
                     kvs += [k]
                 else:
                     assert isinstance(v, str)
-                    if k.startswith('on'):
-                        v = minify(v)
-                    if re.match(r'[\w\-\.,:;/+@#?(){}[\]]+$', v):
-                        # https://html.spec.whatwg.org/multipage/syntax.html#unquoted
-                        kvs += [f'{k}={v}']
-                    elif re.match(r'[\s<>=`\w\-\.,:;/+@#?(){}[\]"]+$', v):
-                        kvs += [f"{k}='{v}'"]
-                    else:
-                        kvs += [f'{k}="{esc(v)}"']
+                    kvs += [f'{k}="{esc(v)}"']
             attrs = ' ' + ' '.join(kvs)
         else:
             attrs = ''

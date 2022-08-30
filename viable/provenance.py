@@ -8,139 +8,11 @@ from flask import after_this_request, jsonify, request, g
 from flask.wrappers import Response
 from werkzeug.local import LocalProxy
 import abc
-import atexit
 import json
-import os
-import secrets
-import signal
-import sqlite3
-import sys
-import threading
-import time
 
-from viable import js, serve, input
+from . import js, serve, input
 import viable as V
-
-handlers: list[Callable[[int, Any], None]] = []
-
-def handle_signal(signum: int, _frame: Any):
-    for h in handlers:
-        h(signum, _frame)
-
-signal.signal(signal.SIGTERM, handle_signal)
-signal.signal(signal.SIGINT, handle_signal)
-atexit.register(lambda: handle_signal(0, None))
-
-class DB:
-    con: sqlite3.Connection
-    _closing: bool
-
-    def __init__(self, path: str):
-        self.con = sqlite3.connect(path, check_same_thread=False)
-        self._closing = False
-
-        self.con.executescript('''
-            pragma journal_mode=WAL;
-            create table if not exists data (
-                user text,
-                key text,
-                value text,
-                ts timestamp default (datetime('now', 'localtime')),
-                primary key (user, key)
-            );
-            create table if not exists meta (
-                user text,
-                key text,
-                value text,
-                ts timestamp default (datetime('now', 'localtime')),
-                primary key (user, key)
-            );
-        ''')
-
-        def handle_signal(signum: int, _frame: Any):
-            if not self._closing:
-                self.con.commit()
-                self.con.close()
-                self._closing = True
-                if signum in (signal.SIGTERM, signal.SIGINT):
-                    sys.exit(1)
-
-        handlers.append(handle_signal)
-
-        def spawn(f: Callable[[], None]) -> None:
-            threading.Thread(target=f, daemon=True).start()
-
-        spawn(self._writer)
-
-    def _writer(self):
-        last = 0
-        while True:
-            time.sleep(1.0)
-            if self._closing:
-                return
-            changes = self.con.total_changes - last
-            if changes:
-                print(f'committing {changes} changes')
-                last = self.con.total_changes
-                self.con.commit()
-
-    def user(self, shared: bool) -> str:
-        if shared:
-            return 'shared'
-        user = getattr(request, 'user', None)
-        if not user:
-            user = request.cookies.get('u')
-            if not user:
-                user = secrets.token_urlsafe(6)
-                self.con.executemany(
-                    'insert into meta(user, key, value) values (?, ?, ?)',
-                    [(user, k, v) for k, v in request.headers.items()]
-                )
-                @after_this_request
-                def later(response: Response) -> Response:
-                    response.set_cookie('u', user)
-                    return response
-            setattr(request, 'user', user)
-        return user
-
-    def update(self, kvs: dict[str, str], shared: bool) -> dict[str, Any]:
-        user = self.user(shared=shared)
-        self.con.executemany(
-            '''
-                insert into data(user, key, value) values (?, ?, ?)
-                on conflict(user, key)
-                do update set value = excluded.value, ts = excluded.ts
-            ''',
-            [(user, k, v) for k, v in kvs.items()]
-        )
-        # todo: do nothing if updated diff was zero
-        if shared:
-            serve.reload()
-            gen = serve.generation
-            @after_this_request
-            def later(response: Response) -> Response:
-                response.set_cookie('gen', str(gen))
-                return response
-            return {'gen': gen}
-        else:
-            return {'refresh': True}
-
-    def get(self, key: str, d: Any, shared: bool) -> Any:
-        user = self.user(shared=shared)
-        for v, in self.con.execute(
-            'select value from data where user = ? and key = ?',
-            [user, key]
-        ):
-            return v
-        return d
-
-_the_db: DB | None = None
-
-def get_db() -> DB:
-    global _the_db
-    if _the_db is None:
-        _the_db = DB(os.environ.get('VIABLE_DB', 'viable.db'))
-    return _the_db
+from .db_con import get_viable_db
 
 def get_store() -> Store:
     if not g.get('viable_stores'):
@@ -320,10 +192,10 @@ class Provenance:
     get: Callable[[str, Any], Any] = lambda k, d: d
 
 provenances: dict[str, Provenance] = {
-    'query':  Provenance(update_query, None,                                            lambda k, d: request.args.get(k, d)),
-    'cookie': Provenance(None,         update_cookies,                                  lambda k, d: json.loads(request.cookies.get('v', '{}')).get(k, d)),
-    'shared': Provenance(None,         lambda kvs: get_db().update(kvs, shared=True),   lambda k, d: get_db().get(k, d, shared=True)),
-    'db':     Provenance(None,         lambda kvs: get_db().update(kvs, shared=False),  lambda k, d: get_db().get(k, d, shared=False)),
+    'query':  Provenance(update_query, None,                                                   lambda k, d: request.args.get(k, d)),
+    'cookie': Provenance(None,         update_cookies,                                         lambda k, d: json.loads(request.cookies.get('v', '{}')).get(k, d)),
+    'shared': Provenance(None,         lambda kvs: get_viable_db().update(kvs, shared=True),   lambda k, d: get_viable_db().get(k, d, shared=True)),
+    'db':     Provenance(None,         lambda kvs: get_viable_db().update(kvs, shared=False),  lambda k, d: get_viable_db().get(k, d, shared=False)),
 }
 
 @serve.expose

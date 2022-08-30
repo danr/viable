@@ -187,10 +187,10 @@ class Serve:
 
         @app.post('/ping') # type: ignore
         def ping():
-            i = request.cookies.get('gen', None)
+            i = request.cookies.get('g', None)
             if i is not None and i != str(self.generation):
                 resp = jsonify({'gen': self.generation})
-                resp.set_cookie('gen', str(self.generation))
+                resp.set_cookie('g', str(self.generation))
                 return resp
             q = Queue[None]()
             with self.notify_reload_lock:
@@ -201,7 +201,7 @@ class Serve:
                 with self.notify_reload_lock:
                     self.notify_reload.remove(q)
             resp = jsonify({'gen': self.generation})
-            resp.set_cookie('gen', str(self.generation))
+            resp.set_cookie('g', str(self.generation))
             return resp
 
     def route(self, rule: str = '/'):
@@ -322,7 +322,7 @@ class Serve:
             html_str = minify(html_str, 'html')
 
         resp = make_response(html_str)
-        resp.set_cookie('gen', str(self.generation))
+        resp.set_cookie('g', str(self.generation))
         return resp
 
     def run(self, host: str | None = None, port: int | None = None):

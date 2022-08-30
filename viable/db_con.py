@@ -22,6 +22,7 @@ def add_writer(con: sqlite3.Connection):
             closing = True
             con.commit()
             con.close()
+            print('commited and closed db')
 
     add_handler(handle_signal)
 

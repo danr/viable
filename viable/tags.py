@@ -81,7 +81,9 @@ css_props = {
         margin-bottom margin-left margin-right margin-top max-height max-width
         min-height min-width mix-blend-mode object-fit object-position opacity
         order orphans outline outline-color outline-offset outline-style
-        outline-width overflow overflow-wrap overflow-x overflow-y padding
+        outline-width overflow overflow-wrap overflow-x overflow-y
+        place-items place-self
+        padding
         padding-bottom padding-left padding-right padding-top page-break-after
         page-break-before page-break-inside perspective perspective-origin
         pointer-events position quotes resize right row-gap scroll-behavior

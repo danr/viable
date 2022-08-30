@@ -14,9 +14,8 @@ def add_handler(h: Handler):
 def handle_signal(signum: int, _frame: Any):
     print('Handling signal', signum)
     for h in _handlers:
-        print('Running handler', h)
         h(signum, _frame)
-    print('Done', signum)
+    print('Done handling signal', signum)
     if signum != 0:
         sys.exit(1)
 

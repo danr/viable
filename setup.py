@@ -1,13 +1,15 @@
 from setuptools import setup
 
 requirements = '''
-    flask
-'''
-
-console_scripts = '''
+    flask>=2.0.2
+    itsdangerous>=2.0
+    typing_extensions
 '''
 
 name='viable'
+
+console_scripts = f'''
+'''
 
 packages=f'''
     {name}
@@ -17,7 +19,7 @@ setup(
     name=name,
     packages=packages.split(),
     version='0.1',
-    description='A viable alternative to frontend programming from python',
+    description='A viable alternative to frontend programming for python',
     url='https://github.com/danr/viable',
     author='Dan Rosén',
     author_email='danr42@gmail.com',

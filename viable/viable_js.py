@@ -1,62 +1,144 @@
-viable_js = str(r'''
-    last_gen = 0
-    async function execute(body) {
-        if (body && typeof body === 'object') {
-            if (body.log) {
-                console.log(body.log)
-            }
-            if (body.eval) {
-                (0, eval)(body.eval)
-            }
-            if (body.set_query) {
-                set_query(body.set_query)
-            }
-            if (body.update_query) {
-                update_query(body.update_query)
-            }
-            if (body.replace) {
-                history.replaceState(null, null, with_pathname(body.replace))
-            }
-            if (body.goto) {
-                history.pushState(null, null, with_pathname(body.goto))
-            }
-            if (body.refresh) {
-                await refresh()
-            } else if (body.gen && body.gen != last_gen) {
-                last_gen = body.gen
-                await refresh()
-            }
-        }
-    }
-    async function call(py_name_and_args, js_args) {
+import textwrap
+viable_js = textwrap.dedent(r'''
+    async function call(...args) {
         const resp = await fetch('/call', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify([py_name_and_args, js_args]),
+            body: JSON.stringify({...state(), args: [...args]}),
         })
-        const body = await resp.json()
-        await execute(body)
-        return resp
+        const next = await resp.json()
+        await update(next)
+    }
+    async function update(next) {
+        if (next.query) {
+            update_query(next.query, push=next.push)
+        }
+        if (next.session) {
+            update_session(next.session)
+        }
+        if (next.refresh !== false) {
+            await refresh()
+        }
+        if (next.eval_js) {
+            ;(0, eval)(next.eval_js)
+        }
     }
     function get_query() {
         return Object.fromEntries(new URL(location.href).searchParams)
     }
-    function update_query(kvs, reload=true) {
-        return set_query({...get_query(), ...kvs}, reload)
-    }
-    function set_query_immediately(kvs, reload=true) {
+    function set_query(kvs, push=false) {
         let next = new URL(location.href)
         next.search = new URLSearchParams(kvs)
-        history.replaceState(null, null, next.href)
-        if (reload) {
-            refresh()
+        if (push) {
+            history.pushState(null, null, next.href)
+        } else {
+            history.replaceState(null, null, next.href)
         }
     }
-    function with_pathname(s) {
-        let next = new URL(location.href)
-        next.pathname = s
-        return next.href
+    function update_query(kvs, push=false) {
+        return set_query({...get_query(), ...kvs}, push=push)
     }
+    function get_session() {
+        try {
+            return JSON.parse(sessionStorage.getItem('v')) || {}
+        } catch (e) {
+            return {}
+        }
+    }
+    function set_session(value) {
+        sessionStorage.setItem('v', JSON.stringify(value))
+    }
+    function update_session(value) {
+        set_session({...get_session(), ...value})
+    }
+    function has_session() {
+        return Object.keys(get_session()).length > 0
+    }
+    function state() {
+        return {session: get_session()}
+    }
+
+    let current_refresh = null
+    let needs_refresh = false
+    async function refresh() {
+        needs_refresh = true
+        if (!current_refresh) {
+            current_refresh = refresh_worker()
+        }
+        const res = await current_refresh
+        if (needs_refresh == true) {
+            refresh()
+        }
+        return res
+    }
+    async function refresh_worker() {
+        const html = document.querySelector('html')
+        needs_refresh = false
+        html.setAttribute('loading', '1')
+        let doc
+        try {
+            const resp = await fetch(location.href, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(state()),
+            })
+            const text = await resp.text()
+            const parser = new DOMParser()
+            doc = parser.parseFromString(text, "text/html")
+        } catch (e) {
+            current_refresh = null
+            return {'ok': false}
+        }
+        morph(document.head, doc.head)
+        morph(document.body, doc.body)
+        const scripts = []
+        for (const script of document.querySelectorAll('script[eval]')) {
+            scripts.push(script.textContent)
+        }
+        for (const script of scripts) {
+            try {
+                ;(0, eval)(script)
+            } catch (e) {
+                console.error(e)
+            }
+        }
+        requestAnimationFrame(() => {
+            if (!current_refresh) {
+                html.setAttribute('loading', '0')
+            }
+        })
+        current_refresh = null
+        return {'ok': true}
+    }
+    async function poll() {
+        while (true) {
+            try {
+                const resp = await fetch('/ping', {method: 'POST'})
+                const body = await resp.json()
+                continue
+            } catch (e) {
+                console.info(`🔁 refreshing... (${e.toString().replace('TypeError: ', '')} /ping)`)
+                const t0 = Date.now()
+                let retries = 0
+                while (true) {
+                    const res = await refresh()
+                    if (res.ok) {
+                        const t = Date.now()
+                        console.info(`✅ refreshed! (${t - t0} ms)`)
+                        break
+                    }
+                    const timeout_ms = retries < 100 ? 50 : 2000
+                    await new Promise(x => setTimeout(x, timeout_ms))
+                    retries += 1
+                    if (retries == 100) {
+                        console.info(`🟥 still waiting for refresh...`)
+                    }
+                }
+            }
+        }
+    }
+    window.onpopstate = () => refresh()
+
     in_focus = true
     window.onfocus = () => { in_focus = true }
     window.onblur = () => { in_focus = false }
@@ -82,7 +164,7 @@ viable_js = str(r'''
                     prev.setAttribute(name, next.getAttribute(name))
                 }
             }
-            if (prev.tagName === 'INPUT' && (document.activeElement !== prev || !in_focus)) {
+            if (prev.tagName === 'INPUT' && (document.activeElement !== prev || !in_focus || window.ignore_focus)) {
                 if (prev.type == 'radio' && document.activeElement.name === prev.name) {
                     // pass
                 } else {
@@ -94,16 +176,22 @@ viable_js = str(r'''
                     }
                 }
             }
-            const pc = [...prev.childNodes]
-            const nc = [...next.childNodes]
-            const num_max = Math.max(pc.length, nc.length)
-            for (let i = 0; i < num_max; ++i) {
-                if (i >= nc.length) {
-                    prev.removeChild(pc[i])
-                } else if (i >= pc.length) {
-                    prev.appendChild(nc[i])
-                } else {
-                    morph(pc[i], nc[i])
+            if (prev.tagName === 'TEXTAREA') {
+                if (document.activeElement !== prev || !in_focus || window.ignore_focus) {
+                    prev.value = next.textContent
+                }
+            } else {
+                const pc = [...prev.childNodes]
+                const nc = [...next.childNodes]
+                const num_max = Math.max(pc.length, nc.length)
+                for (let i = 0; i < num_max; ++i) {
+                    if (i >= nc.length) {
+                        prev.removeChild(pc[i])
+                    } else if (i >= pc.length) {
+                        prev.appendChild(nc[i])
+                    } else {
+                        morph(pc[i], nc[i])
+                    }
                 }
             }
         } else if (
@@ -117,133 +205,22 @@ viable_js = str(r'''
             prev.replaceWith(next)
         }
     }
-    let current
-    let rejected = false
-    async function refresh() {
-        if (current) {
-            rejected = true
-            return current
-        }
-        let resolve, reject
-        current = new Promise((a, b) => {
-            resolve = a;
-            reject = b
-        })
-        rejected = false
-        const html = document.querySelector('html')
-        html.setAttribute('loading', '1')
-        do {
-            rejected = false
-            let text = null
-            let retries = 0
-            while (text === null) {
-                try {
-                    const resp = await fetch(location.href)
-                    text = await resp.text()
-                } catch (e) {
-                    retries++
-                    await new Promise(x => setTimeout(x, retries < 100 ? 50 : 1000))
-                    if (retries > 500) {
-                        console.warn('timeout', e)
-                        reject('timeout')
-                        throw new Error('timeout')
-                    }
-                }
-            }
-            try {
-                const parser = new DOMParser()
-                const doc = parser.parseFromString(text, "text/html")
-                morph(document.head, doc.head)
-                morph(document.body, doc.body)
-                for (const script of document.querySelectorAll('script[eval]')) {
-                    (0, eval)(script.textContent)
-                }
-            } catch(e) {
-                console.warn(e)
-            }
-        } while (rejected);
-        requestAnimationFrame(() => {
-            if (!current) {
-                html.setAttribute('loading', '0')
-            }
-        })
-        current = undefined
-        resolve()
+
+    function queue_refresh(after_ms=100) {
+        clearTimeout(window._qrt)
+        window._qrt = setTimeout(
+            () => requestAnimationFrame(() => refresh()),
+            after_ms
+        )
     }
-    async function poll() {
-        while (true) {
-            try {
-                const resp = await fetch('/ping', {method: 'POST'})
-                body = await resp.json()
-                await execute(body)
-            } catch (e) {
-                console.warn('poll', e)
-                await refresh(600)
-            }
-        }
+
+''').strip()
+
+'''
+    function replace_pathname(s) {
+        // unused for now
+        let next = new URL(location.href)
+        next.pathname = s
+        return next.href
     }
-    window.onpopstate = () => refresh()
-    function input_values() {
-        const inputs = document.querySelectorAll('input:not([type=radio]),input[type=radio]:checked,select')
-        const vals = {}
-        for (let i of inputs) {
-            if (i.getAttribute('truth') == 'server') {
-                continue
-            }
-            if (!i.name) {
-                console.error(i, 'has no name attribute')
-                continue
-            }
-            if (i.type == 'radio') {
-                console.assert(i.checked)
-                vals[i.name] = i.value
-            } else if (i.type == 'checkbox') {
-                vals[i.name] = i.checked
-            } else {
-                vals[i.name] = i.value
-            }
-        }
-        return vals
-    }
-    function throttle(f, ms=150) {
-        let last
-        let timer
-        return (...args) => {
-            if (!timer) {
-                f(...args)
-                timer = setTimeout(() => {
-                    let _last = last
-                    timer = undefined
-                    last = undefined
-                    if (_last) {
-                        f(..._last)
-                    }
-                }, ms)
-            } else {
-                last = [...args]
-            }
-        }
-    }
-    set_query = throttle(set_query_immediately)
-    function debounce(f, ms=200, leading=true, trailing=true) {
-        let timer;
-        let called;
-        return (...args) => {
-            if (!timer && leading) {
-                f.apply(this, args)
-                called = true
-            } else {
-                called = false
-            }
-            clearTimeout(timer)
-            timer = setTimeout(() => {
-                let _called = called;
-                timer = undefined;
-                called = false;
-                if (!_called && trailing) {
-                    f.apply(this, args)
-                }
-            }, ms)
-        }
-    }
-''')
+'''

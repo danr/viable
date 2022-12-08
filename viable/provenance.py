@@ -1,71 +1,231 @@
 from __future__ import annotations
-from typing import TypeVar, Callable, Literal, Generic, Any
-from dataclasses import dataclass, field, replace
+from typing import *
+from dataclasses import *
 
-from collections import defaultdict
-from contextlib import contextmanager
-from flask import after_this_request, jsonify, request, g
+from flask import (
+    after_this_request,  # type: ignore
+    jsonify,
+    request,
+    g,
+)
 from flask.wrappers import Response
 from werkzeug.local import LocalProxy
 import abc
+import functools
 import json
 
-from . import js, serve, input
-from . import tags as V
-from .db_con import get_viable_db
+from .tags import Tags, Node
+from .call_js import CallJS, js, JS
+
+@dataclass
+class ViableRequestData:
+    call_js: CallJS
+    session_provided: bool
+    initial_values: dict[tuple[str, str], Any]
+    written_values: dict[tuple[str, str], Any] = field(default_factory=dict)
+    created_vars: list[Var[Any]] = field(default_factory=list)
+    push: bool = False
+
+    def get(self, provenance: str, name: str, default: Any) -> Any:
+        t = provenance, name
+        if t in self.written_values:
+            return self.written_values[t]
+        return self.initial_values.get(t, default)
+        raise ValueError(f'Invalid {provenance=}')
+
+    def set(self, provenance: str, name: str, next: Any) -> Any:
+        t = provenance, name
+        self.written_values[t] = next
+
+    def updates(self):
+        g: dict[str, dict[str, Any]] = DefaultDict(dict)
+        for (provenance, name), v in self.written_values.items():
+            g[provenance][name] = v
+        if self.push:
+            return {**g, 'push': True}
+        else:
+            return {**g}
+
+    def did_request_session(self) -> bool:
+        return any(v.provenance == 'session' for v in self.created_vars)
+
+def add_request_data(call_js: CallJS):
+    query: dict[str, Any] = dict(request.args)
+    session: dict[str, Any]
+    if (body := request.get_json(force=True, silent=True)) is not None:
+        session = body.get('session', {})
+        session_provided = True
+    else:
+        session = {}
+        session_provided = False
+    initial_values: dict[tuple[str, str], Any] = {}
+    initial_values |= {('query', k): v for k, v in query.items()}
+    initial_values |= {('session', k): v for k, v in session.items()}
+    g.viable_request_data = this = ViableRequestData(
+        call_js=call_js,
+        session_provided=session_provided,
+        initial_values=initial_values
+    )
+    return this
+
+def request_data() -> ViableRequestData:
+    return g.viable_request_data
 
 def get_store() -> Store:
     if not g.get('viable_stores'):
         g.viable_stores = [Store()]
     return g.viable_stores[-1]
 
-@contextmanager
-def _focus_store(s: Store):
-    assert g.viable_stores
-    g.viable_stores.append(s)
-    yield
-    res = g.viable_stores.pop()
-    assert res is s
-
 store: Store = LocalProxy(get_store) # type: ignore
+
+def get_call():
+    return request_data().call_js.store_call
+
+call = LocalProxy(get_call)
 
 A = TypeVar('A')
 B = TypeVar('B')
-def None_map(x: A | None, f: Callable[[A], B]) -> B | None:
-    if x is None:
+def None_map(set: A | None, f: Callable[[A], B]) -> B | None:
+    if set is None:
         return None
     else:
-        return f(x)
+        return f(set)
 
 @dataclass(frozen=True)
+class quiet_repr:
+    value: str
+    def __repr__(self):
+        return self.value
+
+@dataclass
 class Var(Generic[A], abc.ABC):
     default: A
     name: str = ''
+    _: KW_ONLY
+    _sub_prefix: str = ''
+    _provenance: str = 'session'
+    _did_set_store: bool = False
 
     @abc.abstractmethod
     def from_str(self, s: str | Any) -> A:
         raise NotImplementedError
 
-    def __post_init__(self):
-        store.init_var(self)
+    def set_store(self, store: Store):
+        if self._did_set_store:
+            raise ValueError('Variable already associated with a store.')
+        self._did_set_store = True
+        self._provenance = store.provenance
+        self._sub_prefix = store.sub_prefix
+        if not self.name:
+            # get number of variables with this prefix
+            filtered_count = sum(
+                1
+                for v in request_data().created_vars
+                if v._sub_prefix == store.sub_prefix
+            )
+            self.name = f'_{filtered_count}'
+        request_data().created_vars.append(self)
 
-    @property
-    def value(self) -> A:
-        return store.value(self)
+    def rename(self, new_name: str):
+        if not self.name.startswith('_'):
+            raise ValueError('Can only rename variables which do not already have a name')
+        if new_name.startswith('_'):
+            raise ValueError('Name cannot start with underscore')
+        self.name = new_name
 
     @property
     def full_name(self) -> str:
-        return store[self].full_name
+        if self.name == '':
+            raise ValueError(f'Variable {self=} has no assigned name')
+        return self._sub_prefix + self.name
 
     @property
     def provenance(self) -> str:
-        return store[self].provenance
+        return self._provenance
 
-@dataclass(frozen=True)
+    @property
+    def value(self) -> A:
+        return self.from_str(request_data().get(self._provenance, self.full_name, self.default))
+
+    @value.setter
+    def value(self, value: A):
+        self.assign(value)
+
+    def update(self, value: A, push: bool=False) -> str:
+        if isinstance(value, JS):
+            rhs = value.fragment
+        else:
+            rhs = json.dumps(value)
+        q = quiet_repr
+        next = {q(self.provenance): {self.full_name: q(rhs)}}
+        if push:
+            next = {**next, q('push'): q('true')}
+        return f'update({next})'
+
+    @property
+    def assign(self) -> Callable[[A], None]:
+        table = {'query': 0, 'session': 1}
+        provenance_int = table[self.provenance]
+        full_name = self.full_name
+        def set(next: A, provenance_int: int=provenance_int, full_name: str=full_name):
+            provenance = 'query session'.split()[provenance_int]
+            request_data().set(provenance, full_name, next)
+        return set
+
+    def push(self, next: A):
+        if self.provenance == 'query':
+            request_data().push = True
+        return self.assign(next)
+
+    def assign_default(self):
+        request_data().set(self._provenance, self.full_name, self.default)
+
+    # def forget(self):
+    #     request_data().set(self._provenance, self.full_name, Forget())
+
+SomeVar = TypeVar('SomeVar', bound=Var[Any])
+
+@dataclass
+class List(Var[list[A]]):
+    default: list[A] = field(default_factory=list)
+    options: list[A] = field(default_factory=lambda: cast(Any, 'specify some options!'[404]))
+
+    def from_str(self, s: str | Any) -> list[A]:
+        return [self.options[i] for i in self._indicies(s)]
+
+    def _indicies(self, s: str |  Any) -> list[int]:
+        try:
+            ixs = json.loads(s)
+        except:
+            return []
+        if isinstance(ixs, list):
+            return [int(i) for i in ixs] # type: ignore
+        else:
+            return []
+
+    def selected_indicies(self):
+        return self._indicies(self.value)
+
+    def select_options(self) -> list[tuple[A, Tags.option]]:
+        ixs = self.selected_indicies()
+        return [
+            (a, Tags.option(value=str(i), selected=i in ixs))
+            for i, a in enumerate(self.options)
+        ]
+
+    def select(self, options: list[Tags.option]):
+        return Tags.select(
+            *options,
+            multiple=True,
+            onchange=call(self.assign, js('JSON.stringify([...this.selectedOptions].map(o => o.value))')),
+        )
+
+@dataclass
 class Int(Var[int]):
     default: int=0
     min: int|None=None
     max: int|None=None
+    desc: str | None = None
 
     def from_str(self, s: str):
         try:
@@ -79,11 +239,13 @@ class Int(Var[int]):
         return ret
 
     def input(self, type: Literal['input', 'range', 'number'] = 'input'):
-        return input(
+        return Tags.input(
             value=str(self.value),
-            oninput=store.update(self, js('this.value')).goto(),
+            oninput=self.update(js('this.value')),
             min=None_map(self.min, str),
             max=None_map(self.max, str),
+            title=self.desc,
+            type=type,
         )
 
     def range(self):
@@ -92,27 +254,33 @@ class Int(Var[int]):
     def number(self):
         return self.input(type='number')
 
-@dataclass(frozen=True)
+def is_true(set: str | bool | int | None):
+    return str(set).lower() in 'true y yes 1'.split()
+
+@dataclass
 class Bool(Var[bool]):
     default: bool=False
+    desc: str | None = None
 
     def from_str(self, s: str):
         if isinstance(s, bool):
             return s
         else:
-            return s.lower() == 'true'
+            return is_true(s)
 
     def input(self):
-        return input(
+        return Tags.input(
             checked=self.value,
-            oninput=store.update(self, js('this.checked')).goto(),
+            oninput=self.update(js('this.checked')),
             type='checkbox',
+            title=self.desc,
         )
 
-@dataclass(frozen=True)
+@dataclass
 class Str(Var[str]):
     default: str=''
     options: None | tuple[str] | list[str] = None
+    desc: str | None = None
 
     def from_str(self, s: str) -> str:
         if self.options is not None:
@@ -125,205 +293,88 @@ class Str(Var[str]):
 
     def input(self, iff:str|None=None):
         if self.options:
-            return V.select(
+            if self.value not in self.options:
+                self.value = self.options[0]
+            return Tags.select(
                 *[
-                    V.option(
+                    Tags.option(
                         key,
                         selected=self.value == key,
                         data_key=key,
                     )
                     for key in self.options
                 ],
-                oninput=store.update(self, js('this.selectedOptions[0].dataset.key')).goto(iff=iff),
+                oninput=
+                    (f'({iff})&&' if iff else '') +
+                    self.update(js('this.selectedOptions[0].dataset.key')),
             )
         else:
-            return input(**self.bind(iff))
+            return Tags.input(
+                **self.bind(iff),
+                title=self.desc,
+            )
 
     def textarea(self):
-        return V.textarea(**self.bind())
+        b = self.bind()
+        return Tags.textarea(b['value'], oninput=b['oninput'])
 
     def bind(self, iff:str|None=None):
         return {
             'value': str(self.value),
-            'oninput': store.update(self, js('this.value')).goto(iff),
+            'oninput':
+                (f'({iff})&&' if iff else '') +
+                self.update(js('this.value')),
         }
 
-@dataclass(frozen=False)
-class StoredValue:
-    goto_value: Any | js
-    updated: bool
-    var: Var[Any]
-    provenance: str
-    sub_prefix: str
-    name: str
-
-    @property
-    def full_name(self) -> str:
-        return self.sub_prefix + self.name
-
-    @property
-    def initial_value(self) -> Any:
-        return self.var.value
-
-    @property
-    def default_value(self) -> Any:
-        return self.var.default
-
-def update_query(kvs: dict[str, Any | js]):
-    s = js.convert_dict(kvs).fragment
-    return f'update_query({s})'
-
-def update_cookies(kvs: dict[str, str]) -> Any:
-    prev = json.loads(request.cookies.get('v', '{}'))
-    next = {**prev, **kvs}
-    if prev == next:
-        return {}
-    else:
-        @after_this_request
-        def later(response: Response) -> Response:
-            response.set_cookie('v', json.dumps(next))
-            return response
-        return {'refresh': True}
-
-@dataclass(frozen=True)
-class Provenance:
-    js_side: None | Callable[[dict[str, Any | js]], str] = None
-    py_side: None | Callable[[dict[str, str]], dict[str, Any]] = None
-    get: Callable[[str, Any], Any] = lambda k, d: d
-
-provenances: dict[str, Provenance] = {
-    'query':  Provenance(update_query, None,                                                   lambda k, d: request.args.get(k, d)),
-    'cookie': Provenance(None,         update_cookies,                                         lambda k, d: json.loads(request.cookies.get('v', '{}')).get(k, d)),
-    'shared': Provenance(None,         lambda kvs: get_viable_db().update(kvs, shared=True),   lambda k, d: get_viable_db().get(k, d, shared=True)),
-    'db':     Provenance(None,         lambda kvs: get_viable_db().update(kvs, shared=False),  lambda k, d: get_viable_db().get(k, d, shared=False)),
-}
-
-@serve.expose
-def update_py_side(pkvs: dict[str, dict[str, Any]]) -> Response:
-    out: dict[str, Any] = {}
-    for p_name, kvs in pkvs.items():
-        p = provenances[p_name]
-        assert p.py_side
-        out |= p.py_side(kvs)
-    return jsonify(out)
-
-from contextlib import contextmanager
-from typing import ClassVar
+P = ParamSpec('P')
 
 @dataclass(frozen=True)
 class Store:
-    default_provenance: str = 'cookie'
-    values: dict[int, StoredValue] = field(default_factory=dict)
+    provenance: str = 'session'
     sub_prefix: str = ''
 
-    int: ClassVar = Int
-    str: ClassVar = Str
-    bool: ClassVar = Bool
+    @staticmethod
+    def wrap_set_store(factory: Callable[P, SomeVar]) -> Callable[P, SomeVar]:
+        @functools.wraps(factory)
+        def wrapped(self: Store, *a: P.args, **kw: P.kwargs):
+            var = factory(*a, **kw)
+            var.set_store(self)
+            return var
+        return wrapped # type: ignore
+
+    int: ClassVar = wrap_set_store(Int)
+    str: ClassVar = wrap_set_store(Str)
+    bool: ClassVar = wrap_set_store(Bool)
 
     @property
-    def cookie(self):
-        return self.at('cookie')
+    def session(self):
+        return self.at('session')
 
     @property
     def query(self):
         return self.at('query')
 
-    @property
-    def shared(self):
-        return self.at('shared')
+    def __enter__(self):
+        assert g.viable_stores
+        g.viable_stores.append(self)
 
-    @property
-    def db(self):
-        return self.at('db')
+    def __exit__(self, *_exc: Any):
+        res = g.viable_stores.pop()
+        assert res is self
 
-    @contextmanager
     def at(self, provenance: str):
-        next = replace(self, default_provenance=provenance)
-        with _focus_store(next):
-            yield
+        return replace(self, provenance=provenance)
 
-    @contextmanager
     def sub(self, prefix: str):
         full_prefix = self.sub_prefix + prefix + '_'
-        next = replace(self, sub_prefix=full_prefix)
-        with _focus_store(next):
-            yield
-
-    def init_var(self, x: Var[Any]):
-        provenance = self.default_provenance
-        name = x.name
-        if not name:
-            name = f'_{len(self.values)}'
-        self.values[id(x)] = StoredValue(
-            goto_value=None,
-            updated=False,
-            var=x,
-            provenance=provenance,
-            sub_prefix=self.sub_prefix,
-            name=name,
-        )
-
-    def value(self, x: Var[A]) -> A:
-        sv = self[x]
-        s = provenances[sv.provenance].get(sv.full_name, sv.default_value)
-        return sv.var.from_str(s)
-
-    def __getitem__(self, x: Var[Any]) -> StoredValue:
-        return self.values[id(x)]
-
-    def __setitem__(self, x: Var[Any], sv: StoredValue):
-        self.values[id(x)] = sv
+        return replace(self, sub_prefix=full_prefix)
 
     def assign_names(self, names: dict[str, Var[Any] | Any]):
         for k, v in names.items():
-            if isinstance(v, Var) and not v.name and (sv := self.values.get(id(v))):
-                self[v] = replace(sv, name=k)
+            try:
+                isinst = isinstance(v, Var)
+            except:
+                continue
+            if isinst and v.name.startswith('_'):
+                v.rename(k)
 
-    def update(self, var: Var[A], val: A | js) -> Store:
-        return self.update_untyped((var, val))
-
-    def update_untyped(self, *to: tuple[Var[Any], Any | js]) -> Store:
-        next = replace(self, values=self.values.copy())
-        for var, goto in to:
-            next[var] = replace(
-                next[var],
-                goto_value=goto,
-                updated=True
-            )
-        return next
-
-    @property
-    def defaults(self) -> Store:
-        values = {
-            var: replace(sv, goto_value=sv.default_value, updated=True)
-            for var, sv in self.values.items()
-        }
-        return replace(self, values=values)
-
-    def goto(self, iff: str | None=None) -> str:
-        by_provenance: dict[str, dict[str, Any | js]] = defaultdict(dict)
-        for _v, sv in self.values.items():
-            if sv.updated and sv.goto_value != sv.initial_value:
-                by_provenance[sv.provenance][sv.full_name] = sv.goto_value
-        out_parts: list[str] = []
-        py_side: dict[str, dict[str, Any | js]] = {}
-        for p_name, kvs in by_provenance.items():
-            p = provenances[p_name]
-            if p.js_side:
-                out_parts += [p.js_side(kvs).strip(';')]
-            if p.py_side:
-                py_side[p_name] = kvs
-        if py_side:
-            out_parts += [update_py_side.call(js.convert_dicts(py_side))]
-        out = ';'.join(out_parts)
-        if iff:
-            return 'if(' + iff + '){' + out + '}'
-        else:
-            return out
-
-    def goto_script(self) -> V.Node:
-        script = self.goto()
-        if script:
-            return V.script(V.raw(script), eval=True)
-        else:
-            return V.text('')

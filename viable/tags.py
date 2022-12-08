@@ -1,17 +1,26 @@
 from __future__ import annotations
-from typing import Iterable, cast, Any
+from typing import *
+import typing_extensions as tx
 
 import abc
 
-def esc(txt: str, __table: dict[int, str] = str.maketrans({
+AttrValue: TypeAlias = None | bool | str | int
+
+def html_esc(txt: str, __table: dict[int, str] = str.maketrans({
     "<": "&lt;",
     ">": "&gt;",
     "&": "&amp;",
-    "'": "&apos;",
-    '"': "&quot;",
-    '`': "&#96;",
+    # "'": "&apos;",
+    # '"': "&quot;",
+    # '`': "&#96;",
 })) -> str:
     return txt.translate(__table)
+
+def attr_esc(txt: str, __table: dict[int, str] = str.maketrans({
+    '"': "&quot;",
+})) -> str:
+    return txt.translate(__table)
+
 
 def css_esc(txt: str, __table: dict[int, str] = str.maketrans({
     "<": r"\<",
@@ -40,7 +49,7 @@ class Node(abc.ABC):
         return self.to_str()
 
     def to_str(self, indent: int=2) -> str:
-        sep = '' if indent == 0 else '\n'
+        sep = '' # '\n' # '' if indent == 0 else '\n'
         return sep.join(self.to_strs(indent=indent))
 
 css_props = {
@@ -50,6 +59,7 @@ css_props = {
         animation-direction animation-duration animation-fill-mode
         animation-iteration-count animation-name animation-play-state
         animation-timing-function backface-visibility background
+        backdrop-filter
         background-attachment background-blend-mode background-clip
         background-color background-image background-origin
         background-position background-repeat background-size border
@@ -103,17 +113,23 @@ for m, margin in {'m': 'margin', 'p': 'padding', 'b': 'border'}.items():
 css_props['d'] = ['display']
 css_props['bg'] = ['background']
 
+Child = TypeVar('Child', Node, str, dict[str, AttrValue])
+
 class Tag(Node):
     _attributes_ = {'children', 'attrs', 'inline_css', 'inline_sheet'}
-    def __init__(self, *children: Node | str | dict[str, str | bool | None], **attrs: str | bool | None):
+    def __init__(self, *children: Node | str | dict[str, AttrValue], **attrs: AttrValue):
         self.children: list[Node] = []
-        self.attrs: dict[str, str | bool | None] = {}
+        self.attrs: dict[str, AttrValue] = {}
         self.inline_css: list[str] = []
         self.inline_sheet: list[str] = []
         self.append(*children)
         self.extend(attrs)
 
-    def append(self, *children: Node | str | dict[str, str | bool | None], **kws: str | bool | None) -> Tag:
+    def add(self, child: Child) -> Child:
+        self.append(child)
+        return child
+
+    def append(self, *children: Node | str | dict[str, AttrValue], **kws: AttrValue) -> tx.Self:
         self.children += [
             text(child) if isinstance(child, str) else child
             for child in children
@@ -125,7 +141,7 @@ class Tag(Node):
         self.extend(kws)
         return self
 
-    def extend(self, attrs: dict[str, str | bool | None] = {}, **kws: str | bool | None) -> Tag:
+    def extend(self, attrs: dict[str, AttrValue] = {}, **kws: AttrValue) -> tx.Self:
         for k, v in {**attrs, **kws}.items():
             k = k.strip('_')
             if k == 'css':
@@ -137,7 +153,6 @@ class Tag(Node):
                 self.inline_sheet += [v]
                 continue
             if props := css_props.get(k):
-                v = cast(Any, v)
                 if isinstance(v, int):
                     if v == 0:
                         v = '0'
@@ -164,8 +179,10 @@ class Tag(Node):
                     sep = ' '
                 else:
                     raise ValueError(f'only event handlers, styles and classes can be combined, not {k}')
+                if isinstance(v, int):
+                    v = str(v)
                 if not isinstance(v, str):
-                    raise ValueError(f'attribute {k}={v} not str' )
+                    raise ValueError(f'attribute {k}={v} not str or int')
                 self.attrs[k] = str(self.attrs[k]).rstrip(sep) + sep + v.lstrip(sep)
             else:
                 self.attrs[k] = v
@@ -199,9 +216,11 @@ class Tag(Node):
                     continue
                 elif v is True:
                     kvs += [k]
+                elif isinstance(v, str) and v.isalnum():
+                    kvs += [f'{k}={v}']
                 else:
                     assert isinstance(v, str)
-                    kvs += [f'{k}="{esc(v)}"']
+                    kvs += [f'{k}="{attr_esc(v)}"']
             attrs = ' ' + ' '.join(kvs)
         else:
             attrs = ''
@@ -250,7 +269,7 @@ class Tag(Node):
 
 class tag(Tag):
     _attributes_ = {*Tag._attributes_, 'name'}
-    def __init__(self, name: str, *children: Node | str, **attrs: str | int | bool | None | float):
+    def __init__(self, name: str, *children: Node | str, **attrs: AttrValue):
         super(tag, self).__init__(*children, **attrs)
         self.name = name
 
@@ -264,7 +283,7 @@ class text(Node):
         if raw:
             self.txt = txt
         else:
-            self.txt = esc(txt)
+            self.txt = html_esc(txt)
 
     def tag_name(self) -> str:
         return ''
@@ -390,3 +409,113 @@ class ul(Tag): pass
 class var(Tag): pass
 class video(Tag): pass
 class wbr(Tag): pass
+
+class Tags:
+    a          = a
+    abbr       = abbr
+    address    = address
+    area       = area
+    article    = article
+    aside      = aside
+    audio      = audio
+    b          = b
+    base       = base
+    bdi        = bdi
+    bdo        = bdo
+    blockquote = blockquote
+    body       = body
+    br         = br
+    button     = button
+    canvas     = canvas
+    caption    = caption
+    cite       = cite
+    code       = code
+    col        = col
+    colgroup   = colgroup
+    data       = data
+    datalist   = datalist
+    dd         = dd
+    details    = details
+    dfn        = dfn
+    dialog     = dialog
+    div        = div
+    dl         = dl
+    dt         = dt
+    em         = em
+    embed      = embed
+    fieldset   = fieldset
+    figcaption = figcaption
+    figure     = figure
+    footer     = footer
+    form       = form
+    h1         = h1
+    h2         = h2
+    h3         = h3
+    h4         = h4
+    h5         = h5
+    h6         = h6
+    head       = head
+    header     = header
+    hgroup     = hgroup
+    hr         = hr
+    html       = html
+    i          = i
+    iframe     = iframe
+    img        = img
+    input      = input
+    ins        = ins
+    kbd        = kbd
+    label      = label
+    legend     = legend
+    li         = li
+    link       = link
+    main       = main
+    mark       = mark
+    menu       = menu
+    meta       = meta
+    meter      = meter
+    nav        = nav
+    noscript   = noscript
+    ol         = ol
+    optgroup   = optgroup
+    option     = option
+    output     = output
+    p          = p
+    param      = param
+    picture    = picture
+    pre        = pre
+    progress   = progress
+    q          = q
+    rp         = rp
+    rt         = rt
+    ruby       = ruby
+    s          = s
+    samp       = samp
+    script     = script
+    section    = section
+    select     = select
+    slot       = slot
+    small      = small
+    source     = source
+    span       = span
+    strong     = strong
+    style      = style
+    sub        = sub
+    summary    = summary
+    sup        = sup
+    table      = table
+    tbody      = tbody
+    td         = td
+    template   = template
+    textarea   = textarea
+    tfoot      = tfoot
+    th         = th
+    thead      = thead
+    title      = title
+    tr         = tr
+    track      = track
+    u          = u
+    ul         = ul
+    var        = var
+    video      = video
+    wbr        = wbr
